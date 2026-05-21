@@ -10,6 +10,15 @@ sigdep:
     sync-interval-minutes: ${SIGDEP_SYNC_INTERVAL_MINUTES:15}
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00
+    max-reject-attempts: ${SIGDEP_MAX_REJECT_ATTEMPTS:10}
+    # OkHttp timeouts to the hub. Raise read/write for sites with a big
+    # backfill on a slow link (LAB_RESULTS in particular can take time
+    # to serialise + persist). Defaults match the historical hard-coded
+    # values to keep existing deployments unchanged.
+    http:
+      connect-timeout-seconds: ${SIGDEP_HTTP_CONNECT_TIMEOUT_SECONDS:10}
+      read-timeout-seconds: ${SIGDEP_HTTP_READ_TIMEOUT_SECONDS:60}
+      write-timeout-seconds: ${SIGDEP_HTTP_WRITE_TIMEOUT_SECONDS:60}
     identifier-mapping:
       # OpenMRS patient_identifier_type.name  ->  core.identifier_types.code
       # Adjust for site-specific naming. Unmapped types are silently dropped.

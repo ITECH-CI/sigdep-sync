@@ -16,6 +16,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +29,7 @@ import org.springframework.stereotype.Component;
  * else (signs/symptoms of hepato-/neurotoxicity, …) lands in extra_data.
  */
 @Component
+@Order(60)
 public class TptExtractor implements DataExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(TptExtractor.class);

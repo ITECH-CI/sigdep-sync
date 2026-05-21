@@ -1,0 +1,79 @@
+# =============================================================================
+# docker-compose.site.yml — déploiement de l'agent SIGDEP-3 côté site
+#
+# Usage :
+#   1. cp .env.example .env  puis renseignez les valeurs (site code, hub URL,
+#      identifiants OpenMRS local, secret Keycloak agent…).
+#   2. Choisissez le scénario réseau (voir 3 blocs commentés plus bas).
+#   3. docker compose -f docker-compose.site.yml up -d
+#
+# Tag d'image : par défaut "latest". En production on conseille de pin à un
+# tag de version (ex. 1.0.1) pour éviter qu'un docker compose pull surprenne
+# un soir de panne.
+# =============================================================================
+
+services:
+  sigdep-sync:
+    image: ghcr.io/itech-ci/sigdep-sync:${SIGDEP_SYNC_TAG:-latest}
+    container_name: sigdep-sync
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      # Persiste l'outbox SQLite et le sync_state entre redémarrages.
+      # Sans ce volume, chaque redémarrage du container repart de zéro
+      # comme si on avait lancé reset-agent.sh.
+      - sigdep-buffer:/var/lib/sigdep-agent
+
+    # -----------------------------------------------------------------
+    # Réseau — DÉCOMMENTEZ UN SEUL des 3 blocs ci-dessous selon votre cas
+    # -----------------------------------------------------------------
+
+    # === Scénario 1 — OpenMRS tourne sur la machine HÔTE ==============
+    # MySQL OpenMRS écoute sur localhost:3306 du serveur. Le container
+    # agent doit pouvoir résoudre l'hôte depuis l'intérieur.
+    #
+    # Dans le .env : SIGDEP_LOCAL_DB_URL=jdbc:mysql://host.docker.internal:3306/openmrs?readOnly=true&useSSL=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # === Scénario 2 — OpenMRS dans un autre container Docker ==========
+    # On colle l'agent au même réseau Docker que MySQL OpenMRS pour
+    # que la résolution DNS interne fonctionne par nom de container.
+    #
+    # Dans le .env : SIGDEP_LOCAL_DB_URL=jdbc:mysql://<nom_du_container_mysql>:3306/openmrs?readOnly=true&useSSL=false
+    #
+    # Décommentez ET ajustez le nom de réseau (vérifiez avec
+    # `docker network ls`) :
+    # networks:
+    #   - openmrs_default
+
+    # === Scénario 3 — OpenMRS sur une machine distante du LAN =========
+    # Aucune configuration réseau spéciale ; l'agent sort par défaut sur
+    # le réseau bridge Docker. Vérifiez que :
+    #   - le port MySQL 3306 est accessible depuis le serveur où tourne
+    #     l'agent (firewall ouvert)
+    #   - MySQL accepte les connexions distantes (bind-address = 0.0.0.0
+    #     dans /etc/mysql/my.cnf)
+    #   - l'utilisateur sigdep_reader est créé avec '%' comme hôte autorisé
+    #     ou avec l'IP du serveur agent
+    #
+    # Dans le .env : SIGDEP_LOCAL_DB_URL=jdbc:mysql://192.168.1.42:3306/openmrs?readOnly=true&useSSL=false
+
+volumes:
+  sigdep-buffer:
+    # Pour stocker l'outbox sur un volume nommé (par défaut), ou changer
+    # pour un bind mount si vous préférez piloter le chemin :
+    #
+    # driver: local
+    # driver_opts:
+    #   type: none
+    #   o: bind
+    #   device: /var/lib/sigdep-agent
+
+# Décommentez si vous utilisez le scénario 2 (réseau Docker partagé)
+# networks:
+#   openmrs_default:
+#     external: true

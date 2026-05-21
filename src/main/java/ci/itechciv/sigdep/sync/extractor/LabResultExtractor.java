@@ -12,6 +12,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
  * cycle never strands obs of the same encounter across cycles.
  */
 @Component
+@Order(50)
 public class LabResultExtractor implements DataExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(LabResultExtractor.class);

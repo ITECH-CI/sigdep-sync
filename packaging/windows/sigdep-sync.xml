@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Configuration WinSW pour exécuter sigdep-sync comme un service Windows.
+
+  WinSW (Windows Service Wrapper) est un binaire .NET qui transforme un
+  programme console (ici la JVM lançant sigdep-sync.jar) en service
+  Windows natif : démarrage automatique au boot, restart sur crash, logs
+  dirigés vers l'Event Viewer ou un fichier.
+
+  Documentation officielle : https://github.com/winsw/winsw
+-->
+<service>
+    <id>sigdep-sync</id>
+    <name>SIGDEP-3 Edge Sync Agent</name>
+    <description>
+      Agent de synchronisation SIGDEP-3 : lit l'OpenMRS local et pousse
+      les donnees vers le hub central toutes les 15 minutes.
+    </description>
+
+    <!--
+      Le service tourne sous LocalSystem par defaut. Pour le faire
+      tourner sous un compte de service dedie, decommentez le bloc
+      <serviceaccount> et ajustez :
+
+      <serviceaccount>
+        <domain>NT SERVICE</domain>
+        <user>sigdep-sync</user>
+        <prompt>console</prompt>
+      </serviceaccount>
+    -->
+
+    <executable>%BASE%\jre\bin\java.exe</executable>
+    <arguments>-jar "%BASE%\sigdep-sync.jar"</arguments>
+
+    <!--
+      %BASE% est le dossier ou se trouve sigdep-sync-service.exe.
+      WinSW change le cwd vers ce dossier, donc spring-dotenv trouve
+      automatiquement le fichier .env place a cote.
+    -->
+    <workingdirectory>%BASE%</workingdirectory>
+
+    <!-- Demarrage automatique au boot Windows. -->
+    <startmode>Automatic</startmode>
+
+    <!--
+      Reseau : on attend que la pile reseau soit prete avant de lancer
+      l'agent (sinon les premiers cycles echouent sur DNS / DB locale).
+    -->
+    <depend>Tcpip</depend>
+
+    <!--
+      Restart automatique en cas de crash : 3 tentatives espacees de
+      30 s avant abandon. Si l'agent tombe a cause d'une config Java
+      cassee, on n'inonde pas l'Event Viewer.
+    -->
+    <onfailure action="restart" delay="30 sec"/>
+    <onfailure action="restart" delay="30 sec"/>
+    <onfailure action="none"/>
+    <resetfailure>1 hour</resetfailure>
+
+    <!--
+      Logs : un fichier journal par jour, retention 30 jours. Va dans
+      %BASE%\logs\ ; pas besoin de creer le dossier, WinSW le fait.
+    -->
+    <log mode="roll-by-time">
+        <pattern>yyyyMMdd</pattern>
+        <autoRollAtTime>00:00:00</autoRollAtTime>
+        <zipOlderThanNumDays>3</zipOlderThanNumDays>
+        <zipDateFormat>yyyyMM</zipDateFormat>
+    </log>
+    <logpath>%BASE%\logs</logpath>
+
+    <!--
+      Variables d'environnement : les vraies valeurs viennent du .env
+      lu par spring-dotenv au demarrage. On force ici uniquement
+      l'encodage console en UTF-8 pour eviter les caracteres bizarres
+      dans les logs Windows-1252 par defaut.
+    -->
+    <env name="JAVA_TOOL_OPTIONS" value="-Dfile.encoding=UTF-8" />
+</service>

@@ -15,6 +15,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
  * without touching the agent.
  */
 @Component
+@Order(30)
 public class VisitExtractor implements DataExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(VisitExtractor.class);
@@ -67,6 +69,14 @@ public class VisitExtractor implements DataExtractor {
     // TPT — captured on the routine PEC - Suivi patient encounters
     private static final String TPT_STATUS_UUID        = "165049AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Traitement TPT (Début/Fin/En cours/Pas)
     private static final String TPT_REGIMEN_UUID       = "165319AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Protocole TPT (3HP, 6H, INH, …)
+
+    // IVSA — captured on the same PEC - Suivi patient encounter. Concept
+    // IDs are queried by numeric concept_id rather than UUID because these
+    // are SIGDEP-local concepts; the htmlforms use the numeric form too.
+    private static final int IVSA_MSD_CONCEPT_ID            = 165063; // Modèle de soins différenciés (1/2/3)
+    private static final int IVSA_SUCCESS_DATE_CONCEPT_ID   = 165357; // Date de confirmation succès IVSA
+    private static final int IVSA_ALERT_SIGNS_CONCEPT_ID    = 165369; // Signes d'alerte (multi)
+    private static final int IVSA_NEURO_SIGNS_CONCEPT_ID    = 165324; // Évaluation neurologique (multi)
 
     private static final java.util.Set<String> MAPPED = java.util.Set.of(
             WEIGHT_KG_UUID, HEIGHT_CM_UUID, BMI_UUID,
@@ -130,10 +140,12 @@ public class VisitExtractor implements DataExtractor {
 
         List<Long> encounterIds = rows.stream().map(r -> r.encounterId).toList();
         Map<Long, Map<String, ObsValue>> byEncounter = obsPivot.pivot(encounterIds);
+        Map<Long, IvsaData> ivsaByEncounter = fetchIvsaData(encounterIds);
 
         List<CanonicalRecord> out = new ArrayList<>(rows.size());
         for (EncounterRow r : rows) {
             Map<String, ObsValue> obs = byEncounter.getOrDefault(r.encounterId, Map.of());
+            IvsaData ivsa = ivsaByEncounter.getOrDefault(r.encounterId, IvsaData.EMPTY);
 
             // Anthropometry
             BigDecimal weight = ObsPivot.asDecimal(obs.get(WEIGHT_KG_UUID));
@@ -187,7 +199,7 @@ public class VisitExtractor implements DataExtractor {
                     null,                   // cdcStage — only on the initial form
                     null,                   // ctxPrescribed — derived later
                     null,                   // ctxStartDate
-                    null,                   // ivsaSuccessConfirmationDate
+                    ivsa.successDate,
                     null,                   // isPregnant
                     null,                   // isBreastfeeding (legacy boolean) — not extracted; use breastfeedingStatus
                     weight,
@@ -209,6 +221,9 @@ public class VisitExtractor implements DataExtractor {
                     breastfeeding,
                     tptStatus,
                     tptRegimen,
+                    ivsa.msdLabel,
+                    ivsa.alertSignsCount,
+                    ivsa.neuroSignsCount,
                     extra.isEmpty() ? null : extra,
                     r.voided);
 
@@ -227,4 +242,103 @@ public class VisitExtractor implements DataExtractor {
             String encounterTypeName,
             LocalDateTime changed
     ) {}
+
+    /**
+     * Side query for IVSA — we read 4 facts per encounter directly from the
+     * obs table by numeric concept_id, because:
+     *   (a) the IVSA concepts are SIGDEP-local and don't have stable UUIDs,
+     *   (b) ObsPivot returns one ObsValue per concept, but the alert/neuro
+     *       panels are multi-coded (one row per ticked checkbox), so we need
+     *       to count rows, not pivot them.
+     */
+    private Map<Long, IvsaData> fetchIvsaData(List<Long> encounterIds) {
+        if (encounterIds.isEmpty()) return Map.of();
+
+        String inList = encounterIds.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        Map<Long, IvsaData.Builder> builders = new java.util.HashMap<>();
+        for (Long id : encounterIds) builders.put(id, new IvsaData.Builder());
+
+        // MSD code (single value, value_coded) — decode to label.
+        localDb.query(
+                "SELECT o.encounter_id, o.value_coded"
+                        + " FROM obs o"
+                        + " WHERE o.voided = 0 AND o.concept_id = ?"
+                        + "   AND o.encounter_id IN (" + inList + ")",
+                rs -> {
+                    long encId = rs.getLong("encounter_id");
+                    long valueCoded = rs.getLong("value_coded");
+                    if (rs.wasNull()) return;
+                    builders.get(encId).msdConceptId = (int) valueCoded;
+                },
+                IVSA_MSD_CONCEPT_ID);
+
+        // Success confirmation date (single date)
+        localDb.query(
+                "SELECT o.encounter_id, o.value_datetime"
+                        + " FROM obs o"
+                        + " WHERE o.voided = 0 AND o.concept_id = ?"
+                        + "   AND o.encounter_id IN (" + inList + ")",
+                rs -> {
+                    long encId = rs.getLong("encounter_id");
+                    java.sql.Timestamp ts = rs.getTimestamp("value_datetime");
+                    if (ts == null) return;
+                    builders.get(encId).successDate = ts.toLocalDateTime().toLocalDate();
+                },
+                IVSA_SUCCESS_DATE_CONCEPT_ID);
+
+        // Multi-coded panels: count one row per ticked checkbox.
+        localDb.query(
+                "SELECT o.encounter_id, count(*) AS n"
+                        + " FROM obs o"
+                        + " WHERE o.voided = 0 AND o.concept_id = ?"
+                        + "   AND o.encounter_id IN (" + inList + ")"
+                        + " GROUP BY o.encounter_id",
+                rs -> { builders.get(rs.getLong("encounter_id")).alertSignsCount = (short) rs.getInt("n"); },
+                IVSA_ALERT_SIGNS_CONCEPT_ID);
+
+        localDb.query(
+                "SELECT o.encounter_id, count(*) AS n"
+                        + " FROM obs o"
+                        + " WHERE o.voided = 0 AND o.concept_id = ?"
+                        + "   AND o.encounter_id IN (" + inList + ")"
+                        + " GROUP BY o.encounter_id",
+                rs -> { builders.get(rs.getLong("encounter_id")).neuroSignsCount = (short) rs.getInt("n"); },
+                IVSA_NEURO_SIGNS_CONCEPT_ID);
+
+        Map<Long, IvsaData> out = new java.util.HashMap<>();
+        for (var e : builders.entrySet()) out.put(e.getKey(), e.getValue().build());
+        return out;
+    }
+
+    /** Decoded IVSA facts for one encounter. */
+    private record IvsaData(
+            String msdLabel,
+            LocalDate successDate,
+            Short alertSignsCount,
+            Short neuroSignsCount
+    ) {
+        static final IvsaData EMPTY = new IvsaData(null, null, null, null);
+
+        static String decodeMsd(Integer code) {
+            if (code == null) return null;
+            return switch (code) {
+                case 1 -> "Standard";
+                case 2 -> "IVSA";
+                case 3 -> "Échec thérapeutique";
+                default -> null;
+            };
+        }
+
+        static final class Builder {
+            Integer msdConceptId;
+            LocalDate successDate;
+            Short alertSignsCount;
+            Short neuroSignsCount;
+
+            IvsaData build() {
+                return new IvsaData(decodeMsd(msdConceptId), successDate,
+                        alertSignsCount, neuroSignsCount);
+            }
+        }
+    }
 }

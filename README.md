@@ -1,32 +1,33 @@
 # sigdep-sync
 
-Edge agent deployed on each SIGDEP-3 site. Reads the local OpenMRS MySQL
-database in read-only mode, buffers canonical records in a local SQLite
-database (outbox + watermarks), and pushes batches to `sigdep-hub` over
-HTTPS.
+Agent de synchronisation déployé sur chaque site SIGDEP-3. Lit la base
+OpenMRS locale (MySQL, en lecture seule), met les enregistrements
+canoniques en file d'attente dans une base SQLite locale (outbox +
+watermarks), et pousse les lots vers `sigdep-hub` en HTTPS.
 
-## Place in the SIGDEP-3 platform
+## Place dans la plateforme SIGDEP-3
 
-This repo is one of three projects that make up SIGDEP-3:
+Ce dépôt est l'un des trois projets qui composent SIGDEP-3 :
 
-| Project                                                            | Role                                                                    |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| [`sigdep-contracts`](https://github.com/ITECH-CI/sigdep-contracts) | Shared DTOs and API contracts (Maven library)                           |
-| **`sigdep-sync`** (this repo)                                      | Edge agent deployed on each site — reads local OpenMRS, pushes batches  |
-| [`sigdep-hub`](https://github.com/ITECH-CI/sigdep-hub)             | Central server — receives batches, indicators, console                  |
+| Projet                                                             | Rôle                                                                       |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| [`sigdep-contracts`](https://github.com/ITECH-CI/sigdep-contracts) | Bibliothèque Maven : DTOs et contrats d'API partagés                       |
+| **`sigdep-sync`** (ce dépôt)                                       | Agent côté site — lit OpenMRS local, pousse les lots au hub                |
+| [`sigdep-hub`](https://github.com/ITECH-CI/sigdep-hub)             | Serveur central — réception des lots, indicateurs, console web             |
 
-This agent is what makes a site visible on the national console. One
-JVM process per site, running continuously, talking to:
+C'est cet agent qui rend un site visible sur la console nationale. Un
+processus JVM par site, fonctionnant en continu, dialogue avec :
 
-- **OpenMRS MySQL** locally on the site network (read-only).
-- A **SQLite buffer** on disk for offline tolerance and resumability.
-- The **central hub** over HTTPS, authenticated as the `sigdep-agent`
-  Keycloak client (client-credentials).
+- **OpenMRS MySQL**, en local sur le réseau du site (lecture seule).
+- Un **tampon SQLite** sur disque pour la tolérance hors-ligne et la
+  reprise.
+- Le **hub central** en HTTPS, authentifié comme client Keycloak
+  `sigdep-agent` (client-credentials).
 
 ```
    ┌──────────────────┐     ┌─────────────── sigdep-sync ────────────────┐
-   │  site OpenMRS    │     │                                              │
-   │  (MySQL, read)   │◄────┤ extractors ─► SQLite buffer ─► pusher        │
+   │  OpenMRS du site │     │                                              │
+   │  (MySQL, lecture)│◄────┤ extracteurs ─► tampon SQLite ─► pusher       │
    └──────────────────┘     │                  (outbox)        │           │
                             │                                  │  HTTPS    │
                             └──────────────────────────────────┼───────────┘
@@ -35,133 +36,252 @@ JVM process per site, running continuously, talking to:
                                                      sigdep-hub /api/v1/sync/*
 ```
 
-## What it extracts
+## Ce qui est extrait
 
-Each `*Extractor` under `src/main/java/.../sync/extractor/` reads one
-OpenMRS table (or a join), promotes well-known concepts to typed columns,
-keeps the rest in `extra_data`, and emits a record from
-`sigdep-contracts`:
+Chaque `*Extractor` sous `src/main/java/.../sync/extractor/` lit une
+table OpenMRS (ou une jointure), promeut les concepts connus en colonnes
+typées, conserve le reste dans `extra_data`, et émet un enregistrement
+défini dans `sigdep-contracts` :
 
-| Extractor              | Source                                  | Hub entity                  |
-| ---------------------- | --------------------------------------- | --------------------------- |
-| `PatientExtractor`     | `patient`, `person`, `person_name`, …   | `core.patients`             |
-| `VisitExtractor`       | `encounter` of follow-up types          | `core.visits`               |
-| `InitiationExtractor`  | "PEC - Mise sous traitement" encounters | `core.treatment_initiations`|
-| `ClosureExtractor`     | "PEC - Issue" encounters                | `core.closures`             |
-| `LabResultExtractor`   | `obs` for lab concepts                  | `core.lab_results`          |
-| `TptExtractor`         | "PEC - Suivi TPT" + "PEC - Issue TPT"   | `core.tpt_records`          |
+| Extracteur             | Source                                        | Entité côté hub             |
+| ---------------------- | --------------------------------------------- | --------------------------- |
+| `PatientExtractor`     | `patient`, `person`, `person_name`, …         | `core.patients`             |
+| `VisitExtractor`       | `encounter` de type suivi                     | `core.visits`               |
+| `InitiationExtractor`  | encounters « PEC - Mise sous traitement »     | `core.treatment_initiations`|
+| `ClosureExtractor`     | encounters « PEC - Issue »                    | `core.closures`             |
+| `LabResultExtractor`   | `obs` pour les concepts de biologie           | `core.lab_results`          |
+| `TptExtractor`         | « PEC - Suivi TPT » + « PEC - Issue TPT »     | `core.tpt_records`          |
 
-Watermarks (date of the last record successfully sent for each entity)
-are kept in the SQLite buffer, so the agent resumes where it left off
-after a restart or a network outage.
+Les watermarks (date du dernier enregistrement transmis avec succès
+pour chaque entité) sont stockés dans le tampon SQLite, ce qui permet
+à l'agent de reprendre où il s'est arrêté après un redémarrage ou une
+coupure réseau.
 
 ## Configuration
 
-All runtime configuration lives in a `.env` file at the project root.
-`spring-dotenv` loads it automatically at startup, so the same file
-works on Linux, macOS and Windows without any wrapper.
+Toute la configuration runtime vit dans un fichier `.env` à la racine
+du projet. `spring-dotenv` le charge automatiquement au démarrage, et
+le même fichier fonctionne sur Linux, macOS et Windows sans wrapper.
 
 ```bash
 cp .env.example .env
-# edit .env — at minimum set SIGDEP_SITE_CODE, SIGDEP_LOCAL_DB_PASSWORD,
-# SIGDEP_CENTRAL_API_URL and SIGDEP_KEYCLOAK_CLIENT_SECRET.
+# Éditer .env — au minimum renseigner SIGDEP_SITE_CODE,
+# SIGDEP_LOCAL_DB_PASSWORD, SIGDEP_CENTRAL_API_URL et
+# SIGDEP_KEYCLOAK_CLIENT_SECRET.
 ```
 
-Key variables:
+Variables principales :
 
-| Variable                             | Purpose                                              |
-| ------------------------------------ | ---------------------------------------------------- |
-| `SIGDEP_SITE_CODE`                   | DHIS2 facility code — must exist in `core.sites`     |
-| `SIGDEP_LOCAL_DB_URL`                | JDBC URL of the OpenMRS MySQL database               |
-| `SIGDEP_LOCAL_DB_USER` / `_PASSWORD` | A **read-only** account on the OpenMRS DB            |
-| `SIGDEP_BUFFER_PATH`                 | Where the SQLite buffer lives (persistent volume)    |
-| `SIGDEP_CENTRAL_API_URL`             | Base URL of `sigdep-hub` (the ingestion-api)         |
-| `SIGDEP_KEYCLOAK_URL`                | Base URL of the hub's Keycloak                       |
-| `SIGDEP_KEYCLOAK_CLIENT_SECRET`      | Secret for the `sigdep-agent` confidential client    |
-| `SIGDEP_SYNC_INTERVAL_MINUTES`       | How often to run a sync cycle (default 15 min)       |
-| `SIGDEP_BATCH_SIZE`                  | Max records per HTTP call (default 500)              |
+| Variable                             | Rôle                                                  |
+| ------------------------------------ | ----------------------------------------------------- |
+| `SIGDEP_SITE_CODE`                   | Code du site — doit exister dans `core.sites`         |
+| `SIGDEP_LOCAL_DB_URL`                | URL JDBC de la base OpenMRS MySQL                     |
+| `SIGDEP_LOCAL_DB_USER` / `_PASSWORD` | Un compte **lecture seule** sur la base OpenMRS       |
+| `SIGDEP_BUFFER_PATH`                 | Emplacement du tampon SQLite (volume persistant)      |
+| `SIGDEP_CENTRAL_API_URL`             | URL de base de `sigdep-hub` (ingestion-api)           |
+| `SIGDEP_KEYCLOAK_URL`                | URL de base du Keycloak du hub                        |
+| `SIGDEP_KEYCLOAK_CLIENT_SECRET`      | Secret du client confidentiel `sigdep-agent`          |
+| `SIGDEP_SYNC_INTERVAL_MINUTES`       | Période entre deux cycles (défaut 15 min)             |
+| `SIGDEP_BATCH_SIZE`                  | Max d'enregistrements par appel HTTP (défaut 500)     |
+| `SIGDEP_MAX_REJECT_ATTEMPTS`         | Réessais avant passage en DEAD_LETTER (défaut 10)     |
 
-The systemd unit (`packaging/systemd/sigdep-sync.service`) reads the
-same file format via `EnvironmentFile=`. In production, install the
-file at `/etc/sigdep-sync/sigdep-sync.env` and adjust the unit
-accordingly.
+L'unit systemd (`packaging/systemd/sigdep-sync.service`) lit le même
+format de fichier via `EnvironmentFile=`. En production, déposer le
+fichier dans `/etc/sigdep-sync/sigdep-sync.env` et adapter l'unit en
+conséquence.
 
-## Build
+## Construire le projet
+
+Vous n'avez besoin de compiler depuis les sources que pour contribuer
+ou tester des modifications non publiées. Pour un déploiement,
+préférez les artefacts pré-construits publiés par la CI sur chaque
+tag `v*.*.*` :
+
+- **Image Docker** : `ghcr.io/<owner>/sigdep-sync:<version>`
+- **ZIP Windows** : `sigdep-sync-windows-<version>.zip` attaché à la
+  Release GitHub du tag.
+
+Pour compiler depuis les sources :
 
 ```bash
-# Install sigdep-contracts first (sibling project)
+# Installer d'abord sigdep-contracts (projet voisin)
 git clone https://github.com/ITECH-CI/sigdep-contracts
 cd sigdep-contracts && mvn -DskipTests install && cd ..
 
-# Build the agent
+# Construire l'agent
 git clone https://github.com/ITECH-CI/sigdep-sync
 cd sigdep-sync && mvn clean package
 ```
 
-Produces an executable fat JAR at `target/sigdep-sync-*.jar`.
+Produit un fat JAR exécutable dans `target/sigdep-sync-*.jar`.
 
-## Run locally
+## Lancement local
 
 ```bash
-./run.sh           # runs the packaged JAR (production-like)
-./run.sh --dev     # runs via maven (faster restart while iterating)
+./run.sh           # exécute le JAR packagé (proche de la prod)
+./run.sh --dev     # via maven (redémarrage plus rapide en itération)
 ```
 
-Windows:
+Windows :
 
 ```bat
 run.bat
 run.bat --dev
 ```
 
-Both forms read `.env` automatically. The agent logs every cycle to
-stdout — pipe it to a file in production.
+Les deux formes lisent `.env` automatiquement. L'agent journalise
+chaque cycle sur stdout — à rediriger vers un fichier en production.
 
-For a local end-to-end test, point
-`SIGDEP_CENTRAL_API_URL=http://localhost:9000` at a running `sigdep-hub`
-dev stack (see that repo's README).
+Pour un test bout-en-bout local, pointer
+`SIGDEP_CENTRAL_API_URL=http://localhost:9000` vers une stack
+`sigdep-hub` de dev (voir le README de ce dépôt).
 
-## Deploy on a site (Linux)
+## Déployer sur un site
 
-1. Copy the JAR to `/opt/sigdep-sync/sigdep-sync.jar`.
-2. Copy `packaging/systemd/sigdep-sync.service` to
+Trois modes de déploiement sont supportés, à choisir selon le poste
+cible. Le guide complet est dans
+[`sigdep-hub/docs/user-guide/deploiement/installer-agent.md`](https://github.com/ITECH-CI/sigdep-hub/blob/master/docs/user-guide/deploiement/installer-agent.md) ;
+ce qui suit est une fiche d'une page par mode.
+
+### Mode A — systemd (Linux)
+
+1. Copier le JAR dans `/opt/sigdep-sync/sigdep-sync.jar`.
+2. Copier `packaging/systemd/sigdep-sync.service` dans
    `/etc/systemd/system/`.
-3. Copy `.env.example` to `/etc/sigdep-sync/sigdep-sync.env` and fill
-   the site-specific values.
-4. Create the buffer directory:
+3. Copier `.env.example` vers `/etc/sigdep-sync/sigdep-sync.env` et
+   renseigner les valeurs propres au site.
+4. Créer le répertoire du tampon :
    `mkdir -p /var/lib/sigdep-agent && chown sigdep-agent:sigdep-agent /var/lib/sigdep-agent`.
 5. `systemctl enable --now sigdep-sync`.
-6. Tail logs: `journalctl -u sigdep-sync -f`.
+6. Suivre les logs : `journalctl -u sigdep-sync -f`.
 
-## Deploy on a site (Windows)
+### Mode B — Docker
 
-A native Windows wrapper isn't shipped yet. Common options:
+Des images pré-construites sont publiées sur GHCR par le workflow
+[`release.yml`](.github/workflows/release.yml) à chaque tag
+`v*.*.*` :
 
-- **WinSW** (recommended) — drop a small XML config next to the JAR and
-  run `winsw.exe install`. Wraps it as a Windows service that survives
-  reboots.
-- **NSSM** — same idea, more flexible UI.
-
-Both can point at the `.env` file as the source of environment
-variables. A reference config is on the roadmap; for now, copy from a
-similar Java service on the target host.
-
-## Operations
-
-### Watch the buffer
-
-```bash
-sqlite3 /var/lib/sigdep-agent/buffer.sqlite '.schema'
-sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
-  'SELECT entity_type, COUNT(*) FROM outbox GROUP BY entity_type;'
-sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
-  'SELECT entity_type, last_watermark FROM watermarks;'
+```
+ghcr.io/<owner>/sigdep-sync:<version>
+ghcr.io/<owner>/sigdep-sync:latest
 ```
 
-### Force a fresh full sync
+`<owner>` est `itech-ci` (le compte GitHub officiel d'I-TECH Côte
+d'Ivoire qui publie les releases). Un fork peut surcharger la valeur
+via la variable de repo `IMAGE_REGISTRY`. Un compose de référence avec
+trois scénarios réseau (host gateway, réseau Docker existant,
+machine LAN distante) vit dans
+[`deploy/docker-compose.site.yml`](deploy/docker-compose.site.yml).
 
-Stop the agent, delete the buffer file, restart. The agent will replay
-everything from the beginning (slow on a large site — expect hours).
+```bash
+cp deploy/docker-compose.site.yml /opt/sigdep-sync/docker-compose.yml
+cp deploy/.env.example /opt/sigdep-sync/.env
+# éditer .env, puis :
+docker compose -f /opt/sigdep-sync/docker-compose.yml up -d
+```
+
+### Mode C — Service Windows (WinSW)
+
+Une archive ZIP autonome est attachée à chaque Release GitHub :
+`sigdep-sync-windows-<version>.zip` (~80 Mo). Elle contient WinSW, le
+fat-jar et un JRE Temurin 17 embarqué — aucune installation Java
+requise sur le poste du site.
+
+1. Télécharger le ZIP depuis la [page des releases](https://github.com/ITECH-CI/sigdep-sync/releases).
+2. Extraire dans un chemin **sans espaces ni accents** (ex. `C:\sigdep-sync\`).
+3. Copier `sigdep-sync.env.example` en `.env`, renseigner les valeurs
+   du site (encodage UTF-8 — UTF-16 fait échouer le démarrage).
+4. Clic droit sur `install-service.bat` → **Exécuter en tant
+   qu'administrateur**.
+
+Voir [`packaging/windows/README.md`](packaging/windows/README.md) pour
+le runbook Windows complet (logs, mises à jour, dépannage).
+
+## Modèle de robustesse
+
+L'agent garantit qu'aucun enregistrement extrait d'OpenMRS n'est
+silencieusement perdu en chemin vers le hub. Trois briques :
+
+1. **Upserts idempotents côté hub** clés sur `(site_id, source_uuid)`.
+   L'agent peut réémettre le même enregistrement n'importe combien de
+   fois sans créer de doublons.
+2. **L'outbox SQLite** comme file durable. Chaque extraction y passe ;
+   l'agent n'avance sa watermark qu'une fois la page totalement
+   acceptée par le hub. Un crash en milieu de cycle déclenche un
+   nouveau renvoi à partir de la dernière watermark persistée, pas du
+   point où l'extraction s'était arrêtée.
+3. **Boucle de réessai par enregistrement pour les rejets côté hub.**
+   Quand le hub répond `accepted=N, rejected=M`, l'agent sépare la
+   page par `sourceUuid` : les lignes acceptées passent en `SENT`,
+   les rejetées en `REJECTED` avec le code et le message d'erreur. Au
+   cycle suivant, les lignes `REJECTED` sont repoussées **avant** les
+   nouvelles extractions, ce qui résout naturellement un ordre FK
+   incohérent (`UNKNOWN_PATIENT` lors d'un backfill initial) dès que
+   l'enregistrement parent manquant arrive.
+
+Après `SIGDEP_MAX_REJECT_ATTEMPTS` réessais infructueux (défaut 10),
+la ligne passe en `DEAD_LETTER`. Le hub enregistre chaque rejet dans
+`audit.rejected_record`, exposé sur la page **Synchronisation →
+Rejets** de la console : un admin voit l'UUID source exact, le
+message d'erreur, et clique « Résoudre » une fois la donnée corrigée.
+
+Transitions d'état :
+
+```
+   extraction ──► PENDING ──push──► ┌── accepté (hub) ──► SENT (terminal)
+                                     │
+                                     └── rejeté (hub) ──► REJECTED
+                                                              │
+                                                              │ réessai au
+                                                              ▼ cycle suivant
+                                                          (retour push)
+                                                              │
+                                                              ▼
+                                          tentatives ≥ max ──► DEAD_LETTER
+                                                              │
+                                                              │ manuel
+                                                              ▼ « Résoudre »
+                                                          (reste dans l'outbox
+                                                           mais l'agent l'ignore)
+```
+
+La watermark **n'avance que lorsqu'une page est totalement
+acceptée**. Si quoi que ce soit dans la page est rejeté, elle reste
+en place : l'extracteur ne dépasse pas la fenêtre courante, les mêmes
+enregistrements sont ré-extraits, dédupliqués dans l'outbox (update
+in-place sur `source_uuid`), et retentés.
+
+## Opérations
+
+### Surveiller le tampon
+
+```bash
+# Schéma et compteurs par statut
+sqlite3 /var/lib/sigdep-agent/buffer.sqlite '.schema'
+sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
+  'SELECT entity_type, status, COUNT(*) FROM outbox GROUP BY entity_type, status;'
+
+# Watermarks
+sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
+  'SELECT entity_type, last_watermark, last_status FROM sync_state;'
+
+# Inspecter les lignes rejetées (seront retentées automatiquement)
+sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
+  "SELECT id, entity_type, source_uuid, attempts, substr(last_error, 1, 80) AS err
+   FROM outbox WHERE status='REJECTED' ORDER BY attempts DESC LIMIT 20;"
+
+# Inspecter les lignes bloquées (DEAD_LETTER — action manuelle requise
+# côté hub)
+sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
+  "SELECT id, entity_type, source_uuid, attempts, substr(last_error, 1, 80) AS err
+   FROM outbox WHERE status='DEAD_LETTER' ORDER BY id LIMIT 20;"
+```
+
+### Forcer une resynchronisation complète
+
+Arrêter l'agent, supprimer le fichier de tampon, redémarrer. L'agent
+rejouera tout depuis le début (long sur un gros site — compter
+plusieurs heures).
 
 ```bash
 systemctl stop sigdep-sync
@@ -169,21 +289,24 @@ rm /var/lib/sigdep-agent/buffer.sqlite
 systemctl start sigdep-sync
 ```
 
-### Increase the batch size for backfills
+### Augmenter la taille de lot pour un backfill
 
-If the site is far behind and the default 500 records/cycle is too
-slow, bump `SIGDEP_BATCH_SIZE` to 20000 temporarily and restart. The
-hub handles batches up to a few tens of thousands without issue.
+Si le site est très en retard et que les 500 enregistrements / cycle
+par défaut sont trop lents, monter temporairement `SIGDEP_BATCH_SIZE`
+à 20000 et redémarrer. Le hub encaisse sans problème des lots de
+plusieurs dizaines de milliers de lignes.
 
-### "Site code not found" rejections
+### Rejets « Site code not found »
 
-The site code in `SIGDEP_SITE_CODE` must match a row in `core.sites` on
-the hub. Either the site hasn't been seeded yet, or the value is
-wrong. Don't make the agent create rows — sites are reference data and
-live in the hub's seed migration.
+Le code du site dans `SIGDEP_SITE_CODE` doit correspondre à une ligne
+de `core.sites` côté hub. Soit le site n'a pas été initialisé, soit
+la valeur est erronée. Ne pas faire créer la ligne par l'agent — les
+sites sont des données de référence et vivent dans la migration de
+seed du hub.
 
-## License
+## Licence
 
-To be decided in a plenary session with the HMIS TWG; no license file
-is shipped yet. In the meantime, treat the contents as "all rights
-reserved by I-TECH Côte d'Ivoire and the PNLS programme".
+À définir en session plénière avec le HMIS TWG ; aucun fichier de
+licence n'est livré pour l'instant. En attendant, considérer le
+contenu comme « tous droits réservés par I-TECH Côte d'Ivoire et le
+programme PNLS ».

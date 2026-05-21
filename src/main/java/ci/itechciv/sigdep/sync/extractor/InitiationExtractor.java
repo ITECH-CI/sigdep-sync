@@ -16,6 +16,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
  * core.patients — the hub propagates them on upsert (see InitiationWriter).
  */
 @Component
+@Order(20)
 public class InitiationExtractor implements DataExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(InitiationExtractor.class);
@@ -78,6 +80,7 @@ public class InitiationExtractor implements DataExtractor {
     private static final String BIRTH_PLACE_UUID     = "164444AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Lieu de naissance
     private static final String EDUCATION_LEVEL_UUID = "1712AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Niveau d'éducation
     private static final String RELIGION_UUID        = "162894AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Religion
+    private static final String PROFESSION_UUID      = "162904AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // Profession (texte libre)
 
     // --- Pediatric concepts (Fiche initiale enfant) -------------------------
     // Birth / clinical baby
@@ -122,7 +125,8 @@ public class InitiationExtractor implements DataExtractor {
             PARTNER_HIV_STATUS_UUID,
             TB_HISTORY_UUID, ARV_HISTORY_UUID, TRANSFUSION_HISTORY_UUID,
             PTME_HISTORY_UUID, PTME_REGIMEN_HIST_UUID, PTME_HISTORY_DATE_UUID,
-            MARITAL_STATUS_UUID, BIRTH_PLACE_UUID, EDUCATION_LEVEL_UUID, RELIGION_UUID);
+            MARITAL_STATUS_UUID, BIRTH_PLACE_UUID, EDUCATION_LEVEL_UUID, RELIGION_UUID,
+            PROFESSION_UUID);
 
     private static final java.util.Set<String> MAPPED_PEDIATRIC = java.util.Set.of(
             BIRTH_WEIGHT_UUID, BIRTH_LENGTH_UUID, HEAD_CIRC_UUID, APGAR_UUID,
@@ -230,6 +234,7 @@ public class InitiationExtractor implements DataExtractor {
             String birthPlace = ObsPivot.asString(obs.get(BIRTH_PLACE_UUID));
             String educationLevel = ObsPivot.asString(obs.get(EDUCATION_LEVEL_UUID));
             String religion = ObsPivot.asString(obs.get(RELIGION_UUID));
+            String profession = ObsPivot.asString(obs.get(PROFESSION_UUID));
 
             // Pediatric extension — emit only if at least one pediatric obs is present.
             PediatricInitiationDto pediatric = buildPediatric(obs);
@@ -272,6 +277,7 @@ public class InitiationExtractor implements DataExtractor {
                     birthPlace,
                     educationLevel,
                     religion,
+                    profession,
                     pediatric,
                     extra.isEmpty() ? null : extra,
                     r.voided);
@@ -288,7 +294,8 @@ public class InitiationExtractor implements DataExtractor {
      * carry no pediatric extension at all.
      */
     private static PediatricInitiationDto buildPediatric(Map<String, ObsValue> obs) {
-        BigDecimal birthWeight = ObsPivot.asDecimal(obs.get(BIRTH_WEIGHT_UUID));
+        BigDecimal birthWeight = normaliseBirthWeightKg(
+                ObsPivot.asDecimal(obs.get(BIRTH_WEIGHT_UUID)));
         BigDecimal birthLength = ObsPivot.asDecimal(obs.get(BIRTH_LENGTH_UUID));
         BigDecimal headCirc = ObsPivot.asDecimal(obs.get(HEAD_CIRC_UUID));
         Short apgar = ObsPivot.asShort(obs.get(APGAR_UUID));
@@ -346,6 +353,25 @@ public class InitiationExtractor implements DataExtractor {
                 motherEducation, motherActivity,
                 guardianVital, guardianEducation, guardianActivity, guardianHivStatus,
                 admissionDate, schoolingStatus, screeningCode);
+    }
+
+    /**
+     * The "Fiche initiale enfant" form captures birth weight in grams
+     * (the htmlform has {@code <obs conceptId="1406" /> g}). The hub
+     * stores it in core.treatment_initiations_pediatric.birth_weight_kg
+     * as DECIMAL(5,2) (max 999.99), so a 3200 g value would overflow.
+     *
+     * Convert to kg by dividing by 1000 when the raw value clearly
+     * isn't in kg (a newborn never weighs > 15 kg). Below the threshold
+     * we trust the source — protects sites that may already enter the
+     * value in kg.
+     */
+    private static BigDecimal normaliseBirthWeightKg(BigDecimal raw) {
+        if (raw == null) return null;
+        if (raw.compareTo(BigDecimal.valueOf(15)) > 0) {
+            return raw.divide(BigDecimal.valueOf(1000), 2, java.math.RoundingMode.HALF_UP);
+        }
+        return raw;
     }
 
     private record EncounterRow(

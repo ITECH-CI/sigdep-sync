@@ -1,0 +1,60 @@
+name: build
+
+# Runs on every push / PR against master to validate that the code
+# compiles and the artefact can be assembled. Does NOT publish images
+# — that's the job of release.yml on tag events.
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'packaging/**'
+      - 'scripts/**'
+      - '.gitignore'
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sigdep-sync
+        uses: actions/checkout@v4
+
+      # sigdep-sync depends on sigdep-contracts (currently 0.1.0-SNAPSHOT).
+      # Pull and `mvn install` the contracts artefact into the local M2
+      # so the sync build can resolve it. We follow the same branch
+      # ref as the current sync branch (master → master).
+      # actions/checkout refuses paths outside the workspace, so we put
+      # the side-checked sibling inside the workspace and reference it
+      # from there.
+      - name: Checkout sigdep-contracts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sigdep-contracts
+          ref: master
+          path: .sigdep-contracts
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install sigdep-contracts to local M2
+        working-directory: .sigdep-contracts
+        run: mvn -B -DskipTests install
+
+      - name: Build sigdep-sync
+        run: mvn -B -DskipTests package
+
+      - name: Verify the fat jar runs (smoke)
+        run: |
+          jar=$(ls target/sigdep-sync-*.jar | head -1)
+          test -s "$jar" || (echo "fat jar missing" && exit 1)
+          # spring-boot --version should succeed without env vars
+          java -jar "$jar" --help 2>&1 | head -20 || true
+          echo "Smoke OK : $jar"

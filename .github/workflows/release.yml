@@ -1,0 +1,206 @@
+name: release
+
+# Runs on a version tag (v1.0.0, v1.1.0, …). Builds the fat jar, the
+# Docker image and pushes both to GHCR.
+#
+# Image target is read from the repository variable IMAGE_REGISTRY
+# (Repository → Settings → Variables → Actions). Defaults to
+# ghcr.io/<owner-of-the-repo> so a fresh fork pushes to its own owner
+# without any setup. Set IMAGE_REGISTRY=ghcr.io/itech-ci in the
+# upstream repo when you flip the official location.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v1.0.0)'
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # required to create the GitHub Release and upload assets
+      packages: write   # required to push to GHCR
+
+    env:
+      IMAGE_NAME: sigdep-sync
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          # Strip leading 'refs/tags/' if present and the leading 'v'
+          ref="${ref#refs/tags/}"
+          echo "tag=$ref" >> $GITHUB_OUTPUT
+          echo "version=${ref#v}" >> $GITHUB_OUTPUT
+
+      # Compute the image registry now (rather than as a static env)
+      # because docker requires lowercase repository names and
+      # github.repository_owner can be mixed-case ("Pkom17").
+      - name: Resolve image registry
+        id: registry
+        run: |
+          override="${{ vars.IMAGE_REGISTRY }}"
+          if [[ -n "$override" ]]; then
+            registry="$override"
+          else
+            owner="${{ github.repository_owner }}"
+            registry="ghcr.io/${owner,,}"
+          fi
+          echo "registry=$registry" >> $GITHUB_OUTPUT
+
+      - name: Checkout sigdep-sync
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      # Try the same tag first on sigdep-contracts ; fall back to master
+      # if the tag doesn't exist there (rare — they're usually released
+      # together). actions/checkout refuses paths outside the workspace
+      # so we put the sibling inside the workspace and reference it as
+      # ./.sigdep-contracts.
+      - name: Checkout sigdep-contracts (matching tag)
+        id: ck-contracts-tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sigdep-contracts
+          ref: ${{ steps.tag.outputs.tag }}
+          path: .sigdep-contracts
+        continue-on-error: true
+
+      - name: Fallback to contracts master if tag missing
+        if: steps.ck-contracts-tag.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sigdep-contracts
+          ref: master
+          path: .sigdep-contracts
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install sigdep-contracts to local M2
+        working-directory: .sigdep-contracts
+        run: mvn -B -DskipTests install
+
+      - name: Build sigdep-sync fat jar
+        run: mvn -B -DskipTests package
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+            ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.version }}
+            org.opencontainers.image.title=SIGDEP-3 edge sync agent
+            org.opencontainers.image.licenses=Proprietary
+
+      # -----------------------------------------------------------------
+      # Windows packaging — assemble a ZIP with everything a site needs
+      # to install sigdep-sync as a Windows service : WinSW, the fat
+      # jar, an embedded Temurin 17 JRE, and the helper batch scripts.
+      # The ZIP is attached to the GitHub Release of this tag.
+      # -----------------------------------------------------------------
+      - name: Download WinSW
+        run: |
+          # Pin the WinSW version explicitly so future releases don't
+          # surprise us. v3.0.0 is the current stable as of this writing.
+          mkdir -p windows-build
+          curl -fsSL -o windows-build/sigdep-sync-service.exe \
+            https://github.com/winsw/winsw/releases/download/v3.0.0-alpha.11/WinSW-net461.exe
+
+      - name: Download Temurin 17 JRE for Windows x64
+        run: |
+          # Adoptium publishes versioned URLs ; we pin a known-good build
+          # to avoid breakage when a new patch is released.
+          curl -fsSL -o windows-build/jre.zip \
+            "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk"
+          cd windows-build
+          unzip -q jre.zip
+          # Adoptium's zip extracts to jdk-17.x.x+yy-jre/ ; rename to jre/
+          mv jdk-17* jre
+          rm jre.zip
+
+      - name: Stage Windows package
+        run: |
+          PKG=sigdep-sync-windows-${{ steps.tag.outputs.version }}
+          mkdir -p "windows-build/$PKG"
+
+          # WinSW binary + matching config (WinSW expects them to share
+          # the same base name).
+          cp windows-build/sigdep-sync-service.exe "windows-build/$PKG/sigdep-sync-service.exe"
+          cp packaging/windows/sigdep-sync.xml      "windows-build/$PKG/sigdep-sync-service.xml"
+
+          # Application jar (renamed from sigdep-sync-x.y.z.jar to a
+          # stable name so the WinSW XML doesn't need a per-version edit).
+          cp target/sigdep-sync-*.jar "windows-build/$PKG/sigdep-sync.jar"
+
+          # Embedded JRE.
+          cp -r windows-build/jre "windows-build/$PKG/jre"
+
+          # Helper scripts + .env template + local README.
+          cp packaging/windows/install-service.bat        "windows-build/$PKG/"
+          cp packaging/windows/uninstall-service.bat      "windows-build/$PKG/"
+          cp packaging/windows/sigdep-sync.env.example    "windows-build/$PKG/"
+          cp packaging/windows/README.md                  "windows-build/$PKG/README.md"
+
+      - name: Create Windows ZIP
+        run: |
+          PKG=sigdep-sync-windows-${{ steps.tag.outputs.version }}
+          cd windows-build
+          zip -qr "../${PKG}.zip" "$PKG"
+          ls -lh "../${PKG}.zip"
+
+      - name: Create or update GitHub Release with Windows asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.tag.outputs.tag }}
+          ZIP=sigdep-sync-windows-${{ steps.tag.outputs.version }}.zip
+
+          # Create the release if it doesn't exist yet ; on re-runs we
+          # just upload (--clobber) so a workflow_dispatch retry works.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "Release $TAG. See CHANGELOG.md for details." \
+              --verify-tag
+          fi
+
+          gh release upload "$TAG" "$ZIP" --clobber
+
+      - name: Summary
+        run: |
+          echo "### Docker images published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Windows release asset" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- \`sigdep-sync-windows-${{ steps.tag.outputs.version }}.zip\` attached to release [${{ steps.tag.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY

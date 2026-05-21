@@ -17,18 +17,79 @@ public class OutboxRepository {
         this.jdbc = jdbc;
     }
 
+    /**
+     * Enqueue a record into the outbox. If a row with the same
+     * (entity_type, source_uuid) is still PENDING or REJECTED — i.e. the hub
+     * hasn't yet accepted it — we replace its payload + watermark in place
+     * instead of inserting a duplicate. Avoids two-way amplification when
+     * the extractor's watermark is held back by an unresolved reject.
+     */
     public void enqueue(EntityType entityType, UUID sourceUuid, LocalDateTime watermark, String payloadJson) {
-        jdbc.update(
+        int updated = jdbc.update(
                 """
-                INSERT INTO outbox (entity_type, source_uuid, watermark, payload_json, status)
-                VALUES (?, ?, ?, ?, 'PENDING')
+                UPDATE outbox
+                   SET payload_json = ?, watermark = ?
+                 WHERE entity_type  = ?
+                   AND source_uuid  = ?
+                   AND status IN ('PENDING', 'REJECTED')
                 """,
-                entityType.name(),
-                sourceUuid.toString(),
+                payloadJson,
                 java.sql.Timestamp.valueOf(watermark),
-                payloadJson);
+                entityType.name(),
+                sourceUuid.toString());
+        if (updated == 0) {
+            jdbc.update(
+                    """
+                    INSERT INTO outbox (entity_type, source_uuid, watermark, payload_json, status)
+                    VALUES (?, ?, ?, ?, 'PENDING')
+                    """,
+                    entityType.name(),
+                    sourceUuid.toString(),
+                    java.sql.Timestamp.valueOf(watermark),
+                    payloadJson);
+        }
     }
 
+    /**
+     * Drainage queue: rows the hub hasn't accepted yet. Includes:
+     *  - PENDING rows (new extracts)
+     *  - REJECTED rows still under the max-attempts cap (retried each cycle,
+     *    giving UNKNOWN_PATIENT a chance once the patient is finally ingested)
+     *
+     * REJECTED rows come first (ORDER BY status='REJECTED' DESC, id) so the
+     * retries get processed before fresh extracts of the same entity, keeping
+     * batches FK-coherent.
+     *
+     * DEAD_LETTER rows are NOT included — they require manual action.
+     */
+    public List<OutboxEntry> findRetryable(EntityType entityType, int limit, int maxAttempts) {
+        return jdbc.query(
+                """
+                SELECT id, entity_type, source_uuid, watermark, payload_json,
+                       status, attempts, last_error
+                FROM outbox
+                WHERE entity_type = ?
+                  AND ( status = 'PENDING'
+                     OR (status = 'REJECTED' AND attempts < ?) )
+                ORDER BY CASE WHEN status = 'REJECTED' THEN 0 ELSE 1 END, id
+                LIMIT ?
+                """,
+                (rs, i) -> new OutboxEntry(
+                        rs.getLong("id"),
+                        EntityType.valueOf(rs.getString("entity_type")),
+                        UUID.fromString(rs.getString("source_uuid")),
+                        rs.getTimestamp("watermark").toLocalDateTime(),
+                        rs.getString("payload_json"),
+                        rs.getInt("attempts")),
+                entityType.name(),
+                maxAttempts,
+                limit);
+    }
+
+    /**
+     * Backwards-compatible alias — only returns PENDING rows. Kept for any
+     * caller that does not yet know about REJECTED retries.
+     */
     public List<OutboxEntry> findPending(EntityType entityType, int limit) {
         return jdbc.query(
                 """
@@ -74,6 +135,50 @@ public class OutboxRepository {
                         + "WHERE id IN (" + placeholders + ")",
                 params);
     }
+
+    /**
+     * Mark rows the hub explicitly rejected (with sourceUuid + code/message).
+     * They land in status='REJECTED' with the error message; on the next
+     * cycle they're picked back up by {@link #findRetryable}. After
+     * {@code maxAttempts} the row is moved to status='DEAD_LETTER' and won't
+     * be retried until an operator intervenes.
+     */
+    public void markRejected(List<RejectedId> rejects, int maxAttempts) {
+        if (rejects.isEmpty()) return;
+        for (RejectedId r : rejects) {
+            jdbc.update(
+                    """
+                    UPDATE outbox
+                       SET attempts    = attempts + 1,
+                           last_error  = ?,
+                           status      = CASE WHEN attempts + 1 >= ?
+                                              THEN 'DEAD_LETTER'
+                                              ELSE 'REJECTED'
+                                         END
+                     WHERE id = ?
+                    """,
+                    r.errorMessage,
+                    maxAttempts,
+                    r.id);
+        }
+    }
+
+    /** Counters for the per-cycle log line. */
+    public DeadLetterStats deadLetterStats(EntityType entityType) {
+        return jdbc.queryForObject(
+                """
+                SELECT
+                  SUM(CASE WHEN status='REJECTED'    THEN 1 ELSE 0 END) AS retryable,
+                  SUM(CASE WHEN status='DEAD_LETTER' THEN 1 ELSE 0 END) AS stuck
+                FROM outbox WHERE entity_type = ?
+                """,
+                (rs, i) -> new DeadLetterStats(rs.getInt("retryable"), rs.getInt("stuck")),
+                entityType.name());
+    }
+
+    public record RejectedId(long id, String errorMessage) {}
+
+    public record DeadLetterStats(int retryable, int stuck) {}
 
     public record OutboxEntry(
             long id,

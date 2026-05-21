@@ -3,10 +3,16 @@ target/
 *.class
 *.jar
 
-# Local SQLite buffer (per-site sync state — never commit)
+# Side-checkout of sigdep-contracts done by the CI inside the workspace
+# (actions/checkout refuses paths outside the workspace).
+.sigdep-contracts/
+
+# Local SQLite buffer (per-site sync state — never commit). Only the
+# top-level buffer/ directory; the Java package src/.../sync/buffer/
+# must not be matched.
 *.sqlite
 *.db
-buffer/
+/buffer/
 
 # IDE
 .idea/

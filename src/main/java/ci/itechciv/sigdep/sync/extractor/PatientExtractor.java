@@ -14,6 +14,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -26,7 +27,13 @@ import org.springframework.stereotype.Component;
  * used here; site-specific tweaks (custom person_attribute_type UUIDs, etc.)
  * are wired through configuration.
  */
+/**
+ * Order matters: patients are the FK target for every other entity, so they
+ * must reach the hub first. The hub rejects child records (visits, lab
+ * results, ...) with UNKNOWN_PATIENT when the patient row isn't there yet.
+ */
 @Component
+@Order(10)
 public class PatientExtractor implements DataExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(PatientExtractor.class);
