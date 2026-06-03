@@ -59,40 +59,73 @@ public class SyncScheduler {
         log.info("Sync cycle completed.");
     }
 
+    /**
+     * Nombre maximum de pages drainées pour une même entité au cours d'un seul
+     * cycle. Garde-fou anti-boucle-infinie : à batchSize=500, 10 000 pages =
+     * 5 M d'enregistrements, largement au-delà d'un backfill réel. Si on
+     * atteint ce plafond, on s'arrête proprement et le reste partira au cycle
+     * suivant.
+     */
+    private static final int MAX_PAGES_PER_CYCLE = 10_000;
+
     private void runOne(DataExtractor x) {
-        // 1. Watermark
-        LocalDateTime since = syncState.getWatermark(x.getEntityType())
-                .orElse(props.watermarkInitial());
+        int batchSize = props.batchSize();
+        int pages = 0;
 
-        // 2. Extract a page from the source DB
-        List<CanonicalRecord> records = x.extract(since, props.batchSize());
+        // Pagination intra-cycle : on draine l'entité jusqu'à épuisement de la
+        // source. Indispensable pour le backfill initial — sinon une seule
+        // page (batchSize) part par cycle, et les entités dépendantes
+        // (visites, labs…) référencent des patients pas encore montés
+        // (UNKNOWN_PATIENT → DEAD_LETTER). Comme les extracteurs sont ordonnés
+        // (@Order), PATIENTS est intégralement monté avant ses dépendances.
+        while (true) {
+            // 1. Watermark — relu à chaque itération : le flush précédent l'a
+            //    avancé jusqu'au dernier enregistrement accepté.
+            LocalDateTime since = syncState.getWatermark(x.getEntityType())
+                    .orElse(props.watermarkInitial());
 
-        // 3. Enqueue into outbox. Note: even with an empty extract we still
-        //    fall through to the flush step, because the outbox may still
-        //    hold rejected rows from previous cycles that are now retryable.
-        if (!records.isEmpty()) {
-            int enqueued = enqueuer.enqueue(records);
-            log.info("Enqueued {} {} record(s) (since {})", enqueued, x.getEntityType(), since);
-        } else {
-            log.debug("Nothing new for {} since {}", x.getEntityType(), since);
-        }
+            // 2. Extraire une page depuis la base source.
+            List<CanonicalRecord> records = x.extract(since, batchSize);
 
-        // 4. Drain the outbox for this entity. The flusher pushes PENDING +
-        //    retryable REJECTED rows; the watermark only moves when the
-        //    page was fully accepted. A REJECTED row sticks in the outbox
-        //    until either it gets accepted on a later cycle or attempts
-        //    reaches maxRejectAttempts (status = DEAD_LETTER, manual action).
-        var result = flusher.flush(x.getEntityType());
-        DeadLetterStats dlq = outbox.deadLetterStats(x.getEntityType());
-        log.info("Flushed {} batch(es) for {} — {} accepted, {} rejected; outbox holds {} retryable + {} stuck{}",
-                result.batches(), x.getEntityType(),
-                result.rowsAccepted(), result.rowsRejected(),
-                dlq.retryable(), dlq.stuck(),
-                result.stoppedEarly() ? " — STOPPED early after a push failure" : "");
+            // 3. Mettre en file (outbox). Même avec une extraction vide on
+            //    passe au flush : l'outbox peut contenir des REJECTED d'un
+            //    cycle précédent désormais rejouables.
+            if (!records.isEmpty()) {
+                int enqueued = enqueuer.enqueue(records);
+                log.info("Enqueued {} {} record(s) (since {})", enqueued, x.getEntityType(), since);
+            } else {
+                log.debug("Nothing new for {} since {}", x.getEntityType(), since);
+            }
 
-        if (dlq.stuck() > 0) {
-            log.warn("{} {} record(s) parked in DEAD_LETTER — manual review needed on the hub Rejets page",
-                    dlq.stuck(), x.getEntityType());
+            // 4. Vider l'outbox pour cette entité. Le watermark n'avance que
+            //    sur un batch entièrement accepté ; un REJECTED reste en
+            //    outbox jusqu'à acceptation ultérieure ou DEAD_LETTER après
+            //    maxRejectAttempts.
+            var result = flusher.flush(x.getEntityType());
+            DeadLetterStats dlq = outbox.deadLetterStats(x.getEntityType());
+            log.info("Flushed {} batch(es) for {} — {} accepted, {} rejected; outbox holds {} retryable + {} stuck{}",
+                    result.batches(), x.getEntityType(),
+                    result.rowsAccepted(), result.rowsRejected(),
+                    dlq.retryable(), dlq.stuck(),
+                    result.stoppedEarly() ? " — STOPPED early after a push failure" : "");
+
+            if (dlq.stuck() > 0) {
+                log.warn("{} {} record(s) parked in DEAD_LETTER — manual review needed on the hub Rejets page",
+                        dlq.stuck(), x.getEntityType());
+            }
+
+            // Conditions d'arrêt :
+            //  - page non pleine → la source est épuisée ;
+            //  - échec réseau (stoppedEarly) → inutile d'insister ce cycle ;
+            //  - plafond de sécurité atteint.
+            if (records.size() < batchSize || result.stoppedEarly()) {
+                break;
+            }
+            if (++pages >= MAX_PAGES_PER_CYCLE) {
+                log.warn("{} : plafond de {} pages atteint sur ce cycle — le reste partira au prochain cycle",
+                        x.getEntityType(), MAX_PAGES_PER_CYCLE);
+                break;
+            }
         }
     }
 }

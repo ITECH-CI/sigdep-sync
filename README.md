@@ -21,8 +21,8 @@ processus JVM par site, fonctionnant en continu, dialogue avec :
 - **OpenMRS MySQL**, en local sur le réseau du site (lecture seule).
 - Un **tampon SQLite** sur disque pour la tolérance hors-ligne et la
   reprise.
-- Le **hub central** en HTTPS, authentifié comme client Keycloak
-  `sigdep-agent` (client-credentials).
+- Le **hub central** en HTTPS, authentifié par une **clé API** propre au
+  site (en-tête `X-API-Key`).
 
 ```
    ┌──────────────────┐     ┌─────────────── sigdep-sync ────────────────┐
@@ -67,7 +67,7 @@ le même fichier fonctionne sur Linux, macOS et Windows sans wrapper.
 cp .env.example .env
 # Éditer .env — au minimum renseigner SIGDEP_SITE_CODE,
 # SIGDEP_LOCAL_DB_PASSWORD, SIGDEP_CENTRAL_API_URL et
-# SIGDEP_KEYCLOAK_CLIENT_SECRET.
+# SIGDEP_API_KEY.
 ```
 
 Variables principales :
@@ -79,8 +79,7 @@ Variables principales :
 | `SIGDEP_LOCAL_DB_USER` / `_PASSWORD` | Un compte **lecture seule** sur la base OpenMRS       |
 | `SIGDEP_BUFFER_PATH`                 | Emplacement du tampon SQLite (volume persistant)      |
 | `SIGDEP_CENTRAL_API_URL`             | URL de base de `sigdep-hub` (ingestion-api)           |
-| `SIGDEP_KEYCLOAK_URL`                | URL de base du Keycloak du hub                        |
-| `SIGDEP_KEYCLOAK_CLIENT_SECRET`      | Secret du client confidentiel `sigdep-agent`          |
+| `SIGDEP_API_KEY`                     | Clé API du site (en-tête `X-API-Key`), via la console |
 | `SIGDEP_SYNC_INTERVAL_MINUTES`       | Période entre deux cycles (défaut 15 min)             |
 | `SIGDEP_BATCH_SIZE`                  | Max d'enregistrements par appel HTTP (défaut 500)     |
 | `SIGDEP_MAX_REJECT_ATTEMPTS`         | Réessais avant passage en DEAD_LETTER (défaut 10)     |

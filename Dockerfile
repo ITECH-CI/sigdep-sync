@@ -33,7 +33,7 @@ RUN chown sigdep:sigdep /opt/sigdep/sigdep-sync.jar
 USER sigdep
 
 # Defaults match application.yml ; override at runtime with env vars
-# (SIGDEP_SITE_CODE, SIGDEP_CENTRAL_API_URL, SIGDEP_KEYCLOAK_*, etc.).
+# (SIGDEP_SITE_CODE, SIGDEP_CENTRAL_API_URL, SIGDEP_API_KEY, etc.).
 ENV SIGDEP_BUFFER_PATH=/var/lib/sigdep-agent/buffer.sqlite
 
 # Lightweight healthcheck: the actuator /health is exposed when

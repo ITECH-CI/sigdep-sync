@@ -19,6 +19,9 @@ sigdep:
       connect-timeout-seconds: ${SIGDEP_HTTP_CONNECT_TIMEOUT_SECONDS:10}
       read-timeout-seconds: ${SIGDEP_HTTP_READ_TIMEOUT_SECONDS:60}
       write-timeout-seconds: ${SIGDEP_HTTP_WRITE_TIMEOUT_SECONDS:60}
+    # Clé API du site (auth v2.0). Générée dans la console hub
+    # (Sites → « Gérer » → Générer une clé), copiée ici une seule fois.
+    api-key: ${SIGDEP_API_KEY:}
     identifier-mapping:
       # OpenMRS patient_identifier_type.name  ->  core.identifier_types.code
       # Adjust for site-specific naming. Unmapped types are silently dropped.
@@ -34,10 +37,6 @@ sigdep:
     buffer-db:
       jdbc-url: jdbc:sqlite:${SIGDEP_BUFFER_PATH:/var/lib/sigdep-agent/buffer.sqlite}
       driver-class-name: org.sqlite.JDBC
-    keycloak:
-      issuer-url: ${SIGDEP_KEYCLOAK_URL:http://localhost:8180}/realms/sigdep
-      client-id: ${SIGDEP_KEYCLOAK_CLIENT_ID:sigdep-agent}
-      client-secret: ${SIGDEP_KEYCLOAK_CLIENT_SECRET:}
     backfill:
       enabled: false
       max-requests-per-minute: 30

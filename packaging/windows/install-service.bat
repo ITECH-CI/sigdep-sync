@@ -29,7 +29,7 @@ if not exist .env (
     echo.
     echo Copiez sigdep-sync.env.example en .env et completez les
     echo valeurs (SIGDEP_SITE_CODE, SIGDEP_LOCAL_DB_PASSWORD,
-    echo SIGDEP_CENTRAL_API_URL, SIGDEP_KEYCLOAK_CLIENT_SECRET).
+    echo SIGDEP_CENTRAL_API_URL, SIGDEP_API_KEY).
     echo.
     pause
     exit /b 1

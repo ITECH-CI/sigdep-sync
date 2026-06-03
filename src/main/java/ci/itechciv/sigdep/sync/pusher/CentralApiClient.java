@@ -21,16 +21,13 @@ public class CentralApiClient {
     private final OkHttpClient http;
     private final ObjectMapper mapper;
     private final SyncProperties props;
-    private final TokenProvider tokens;
 
     public CentralApiClient(OkHttpClient http,
                             ObjectMapper mapper,
-                            SyncProperties props,
-                            TokenProvider tokens) {
+                            SyncProperties props) {
         this.http = http;
         this.mapper = mapper;
         this.props = props;
-        this.tokens = tokens;
     }
 
     public SyncBatchResponse push(EntityType entityType, SyncBatchRequest<?> batch) throws IOException {
@@ -41,9 +38,11 @@ public class CentralApiClient {
                 .url(url)
                 .post(body);
 
-        String token = tokens.getToken();
-        if (token != null) {
-            req.header("Authorization", "Bearer " + token);
+        // Auth v2.0 : clé API opaque dans X-API-Key (remplace le bearer OAuth).
+        // Vide en dev (le hub en profil dev accepte les requêtes non authentifiées).
+        String apiKey = props.apiKey();
+        if (apiKey != null && !apiKey.isBlank()) {
+            req.header("X-API-Key", apiKey);
         }
 
         try (Response resp = http.newCall(req.build()).execute()) {

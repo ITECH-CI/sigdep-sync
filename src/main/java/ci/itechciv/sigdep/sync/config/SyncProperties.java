@@ -12,7 +12,10 @@ public record SyncProperties(
         int syncIntervalMinutes,
         LocalDateTime watermarkInitial,
         Map<String, String> identifierMapping,
-        Keycloak keycloak,
+        // Clé API opaque (UUID) générée côté hub pour ce site, envoyée dans
+        // l'en-tête X-API-Key (auth v2.0, remplace Keycloak). Vide → aucune
+        // en-tête d'auth (profil dev du hub).
+        String apiKey,
         Backfill backfill,
         // How many times we re-push a record the hub rejected before parking
         // it in DEAD_LETTER. Tuned so transient FK ordering issues
@@ -26,8 +29,6 @@ public record SyncProperties(
         // rather than dropping batch-size unnecessarily.
         Http http
 ) {
-    public record Keycloak(String issuerUrl, String clientId, String clientSecret) {}
-
     public record Backfill(boolean enabled, int maxRequestsPerMinute, String cron) {}
 
     public record Http(

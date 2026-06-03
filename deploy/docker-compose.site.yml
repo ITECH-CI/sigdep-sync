@@ -3,7 +3,7 @@
 #
 # Usage :
 #   1. cp .env.example .env  puis renseignez les valeurs (site code, hub URL,
-#      identifiants OpenMRS local, secret Keycloak agent…).
+#      identifiants OpenMRS local, clé API du site…).
 #   2. Choisissez le scénario réseau (voir 3 blocs commentés plus bas).
 #   3. docker compose -f docker-compose.site.yml up -d
 #

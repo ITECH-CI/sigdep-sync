@@ -23,7 +23,7 @@ contient en plus :
 
 - Windows 10 / 11 / Server 2016+ (64-bit).
 - **Droits administrateur** sur le poste (pour installer le service).
-- Accès réseau sortant vers le hub SIGDEP et son Keycloak.
+- Accès réseau sortant vers le hub SIGDEP (HTTPS).
 - MySQL OpenMRS accessible localement ou via le LAN.
 
 Aucun Java n'est à installer : le JRE est embarqué dans l'archive.
@@ -51,7 +51,7 @@ Aucun Java n'est à installer : le JRE est embarqué dans l'archive.
    - `SIGDEP_SITE_CODE` — code du site, fourni par l'équipe SIGDEP
    - `SIGDEP_LOCAL_DB_PASSWORD` — mot de passe du compte MySQL lecture seule
    - `SIGDEP_CENTRAL_API_URL` — URL publique du hub
-   - `SIGDEP_KEYCLOAK_CLIENT_SECRET` — secret OIDC fourni par l'équipe SIGDEP
+   - `SIGDEP_API_KEY` — clé API du site, fournie par l'équipe SIGDEP
 
 4. **Lancer l'installation** (clic droit sur le fichier
    → « Exécuter en tant qu'administrateur ») :
@@ -131,7 +131,6 @@ exactement où il en était.
 - Tester la connectivité depuis le poste :
   ```
   curl -fsSL %SIGDEP_CENTRAL_API_URL%/actuator/health
-  curl -fsSL %SIGDEP_KEYCLOAK_URL%/realms/sigdep
   ```
 - Tester MySQL avec le client en ligne (s'il est installé sur le poste) :
   ```
