@@ -1,0 +1,26 @@
+# Service systemd pour l'agent SIGDEP-3 — template installé par install.sh.
+# Les @PLACEHOLDER@ sont remplacés par install.sh selon le dossier choisi.
+#
+# Le JRE est EMBARQUÉ (@INSTALL_DIR@/jre) : aucun Java requis sur la machine.
+# Le .env est lu depuis le dossier d'installation (spring-dotenv le trouve via
+# le WorkingDirectory).
+[Unit]
+Description=SIGDEP-3 Edge Sync Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@INSTALL_DIR@
+# JRE embarqué — pas de dépendance Java système.
+ExecStart=@INSTALL_DIR@/jre/bin/java -Dfile.encoding=UTF-8 -jar @INSTALL_DIR@/sigdep-sync.jar
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sigdep-sync
+
+[Install]
+WantedBy=multi-user.target

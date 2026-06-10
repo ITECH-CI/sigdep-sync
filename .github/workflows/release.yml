@@ -176,12 +176,51 @@ jobs:
           zip -qr "../${PKG}.zip" "$PKG"
           ls -lh "../${PKG}.zip"
 
-      - name: Create or update GitHub Release with Windows asset
+      # -----------------------------------------------------------------
+      # Linux packaging — self-contained tarball : the fat jar, an
+      # embedded Temurin 17 JRE (Linux x64), the systemd unit template
+      # and the install/uninstall scripts. No Java needed on the site.
+      # -----------------------------------------------------------------
+      - name: Download Temurin 17 JRE for Linux x64
+        run: |
+          mkdir -p linux-build
+          curl -fsSL -o linux-build/jre.tar.gz \
+            "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jre/hotspot/normal/eclipse?project=jdk"
+          tar -C linux-build -xzf linux-build/jre.tar.gz
+          mv linux-build/jdk-17* linux-build/jre
+          rm linux-build/jre.tar.gz
+
+      - name: Stage Linux package
+        run: |
+          PKG=sigdep-sync-linux-${{ steps.tag.outputs.version }}
+          mkdir -p "linux-build/$PKG"
+
+          # Application jar (stable name) + embedded JRE.
+          cp target/sigdep-sync-*.jar "linux-build/$PKG/sigdep-sync.jar"
+          cp -r linux-build/jre        "linux-build/$PKG/jre"
+
+          # systemd unit template + scripts + .env template + README.
+          cp packaging/linux/sigdep-sync.service.template "linux-build/$PKG/"
+          cp packaging/linux/install.sh                   "linux-build/$PKG/"
+          cp packaging/linux/uninstall.sh                 "linux-build/$PKG/"
+          cp packaging/linux/sigdep-sync.env.example      "linux-build/$PKG/"
+          cp packaging/linux/README.md                    "linux-build/$PKG/README.md"
+          chmod +x "linux-build/$PKG/install.sh" "linux-build/$PKG/uninstall.sh"
+
+      - name: Create Linux tarball
+        run: |
+          PKG=sigdep-sync-linux-${{ steps.tag.outputs.version }}
+          # Tar preserves the +x bit on the scripts and the JRE binaries.
+          tar -C linux-build -czf "${PKG}.tar.gz" "$PKG"
+          ls -lh "${PKG}.tar.gz"
+
+      - name: Create or update GitHub Release with installer assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${{ steps.tag.outputs.tag }}
           ZIP=sigdep-sync-windows-${{ steps.tag.outputs.version }}.zip
+          TGZ=sigdep-sync-linux-${{ steps.tag.outputs.version }}.tar.gz
 
           # Create the release if it doesn't exist yet ; on re-runs we
           # just upload (--clobber) so a workflow_dispatch retry works.
@@ -192,7 +231,7 @@ jobs:
               --verify-tag
           fi
 
-          gh release upload "$TAG" "$ZIP" --clobber
+          gh release upload "$TAG" "$ZIP" "$TGZ" --clobber
 
       - name: Summary
         run: |
@@ -201,6 +240,9 @@ jobs:
           echo "- \`${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Windows release asset" >> $GITHUB_STEP_SUMMARY
+          echo "### Installeurs autonomes (jar + JRE embarqué)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- \`sigdep-sync-windows-${{ steps.tag.outputs.version }}.zip\` attached to release [${{ steps.tag.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
+          echo "- Windows (service) : \`sigdep-sync-windows-${{ steps.tag.outputs.version }}.zip\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Linux (systemd)   : \`sigdep-sync-linux-${{ steps.tag.outputs.version }}.tar.gz\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Attachés à la release [${{ steps.tag.outputs.tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
