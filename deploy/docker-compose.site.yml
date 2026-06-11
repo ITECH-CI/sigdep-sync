@@ -18,6 +18,12 @@ services:
     container_name: sigdep-sync
     restart: unless-stopped
 
+    # L'image n'est publiée que pour linux/amd64. Sur un poste arm64
+    # (Mac Apple Silicon) Docker Desktop l'exécute par émulation. Sur un
+    # serveur Linux amd64 — le cas de production — c'est de l'exécution
+    # native, cette ligne n'a aucun effet.
+    platform: linux/amd64
+
     env_file:
       - .env
 

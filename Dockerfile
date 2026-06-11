@@ -36,9 +36,20 @@ USER sigdep
 # (SIGDEP_SITE_CODE, SIGDEP_CENTRAL_API_URL, SIGDEP_API_KEY, etc.).
 ENV SIGDEP_BUFFER_PATH=/var/lib/sigdep-agent/buffer.sqlite
 
-# Lightweight healthcheck: the actuator /health is exposed when
-# management endpoints are enabled (default in application.yml).
-HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -q -O - http://localhost:8080/actuator/health | grep -q '"status":"UP"' || exit 1
+# Healthcheck. The agent is a scheduler-only app: it does NOT pull in
+# spring-boot-starter-web, so there is no HTTP server and no
+# /actuator/health endpoint to curl. Instead we prove liveness two ways:
+#   1. the Java process (PID 1) is alive, and
+#   2. the SQLite buffer was touched within the last sync interval × 2
+#      (the agent reads/writes it every cycle — a stale file means the
+#      scheduler is wedged).
+# interval-ms default is 900000 (15 min) ; we allow 35 min of staleness
+# before flagging unhealthy, and a generous start-period for the initial
+# backfill which can run long.
+HEALTHCHECK --interval=120s --timeout=10s --start-period=120s --retries=3 \
+  CMD pgrep -f sigdep-sync.jar >/dev/null \
+   && [ -f "$SIGDEP_BUFFER_PATH" ] \
+   && [ "$(( $(date +%s) - $(stat -c %Y "$SIGDEP_BUFFER_PATH") ))" -lt 2100 ] \
+   || exit 1
 
 ENTRYPOINT ["java", "-jar", "/opt/sigdep/sigdep-sync.jar"]

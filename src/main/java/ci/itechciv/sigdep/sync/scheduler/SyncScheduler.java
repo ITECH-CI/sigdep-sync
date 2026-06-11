@@ -12,10 +12,12 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
+@DependsOn("bufferSchemaInitializer")
 public class SyncScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(SyncScheduler.class);
@@ -117,8 +119,22 @@ public class SyncScheduler {
             // Conditions d'arrêt :
             //  - page non pleine → la source est épuisée ;
             //  - échec réseau (stoppedEarly) → inutile d'insister ce cycle ;
+            //  - aucune acceptation sur cette itération → le watermark n'a pas
+            //    avancé (flush 100 % rejeté). Re-extraire donnerait la même page
+            //    depuis le même watermark : boucle infinie. On s'arrête ; les
+            //    rejets restent en outbox et seront rejoués au PROCHAIN cycle,
+            //    une fois que les entités amont (PATIENTS…) auront tourné. Sans
+            //    ce garde-fou, une entité dont tous les enregistrements sont
+            //    rejetés (dépendance pas encore montée) monopolise le thread du
+            //    scheduler et les entités suivantes ne tournent jamais.
             //  - plafond de sécurité atteint.
             if (records.size() < batchSize || result.stoppedEarly()) {
+                break;
+            }
+            if (result.rowsAccepted() == 0) {
+                log.info("{} : aucune acceptation sur cette page (watermark inchangé) — "
+                        + "arrêt du drainage ; rejets rejoués au prochain cycle",
+                        x.getEntityType());
                 break;
             }
             if (++pages >= MAX_PAGES_PER_CYCLE) {
