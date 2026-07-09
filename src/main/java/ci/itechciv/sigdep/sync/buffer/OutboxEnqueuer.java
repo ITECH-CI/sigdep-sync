@@ -32,7 +32,7 @@ public class OutboxEnqueuer {
         for (CanonicalRecord r : records) {
             try {
                 String payload = mapper.writeValueAsString(r.payload());
-                outbox.enqueue(r.entityType(), r.sourceUuid(), r.watermark(), payload);
+                outbox.enqueue(r.entityType(), r.sourceUuid(), r.watermark(), r.sourceId(), payload);
                 n++;
             } catch (JsonProcessingException e) {
                 log.warn("Skipping record {} ({}) — JSON serialization failed: {}",

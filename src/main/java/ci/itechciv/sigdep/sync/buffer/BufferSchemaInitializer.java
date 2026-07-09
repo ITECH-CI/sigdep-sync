@@ -61,7 +61,33 @@ public class BufferSchemaInitializer {
             if (trimmed.isEmpty()) continue;
             buffer.execute(trimmed);
         }
+        addColumnIfMissing("sync_state", "last_id", "INTEGER");
+        addColumnIfMissing("outbox", "source_id", "INTEGER");
         log.info("SQLite buffer schema ensured");
+    }
+
+    /**
+     * Ajoute une colonne sur une base déjà créée avant son introduction (le
+     * CREATE TABLE IF NOT EXISTS ne modifie pas une table existante). SQLite
+     * n'a pas d'ADD COLUMN IF NOT EXISTS → on interroge PRAGMA table_info
+     * d'abord. Idempotent (colonnes du keyset : sync_state.last_id,
+     * outbox.source_id).
+     */
+    private void addColumnIfMissing(String table, String column, String type) {
+        boolean present = Boolean.TRUE.equals(buffer.query(
+                "PRAGMA table_info(" + table + ")",
+                rs -> {
+                    while (rs.next()) {
+                        if (column.equalsIgnoreCase(rs.getString("name"))) {
+                            return Boolean.TRUE;
+                        }
+                    }
+                    return Boolean.FALSE;
+                }));
+        if (!present) {
+            buffer.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
+            log.info("{}.{} column added (keyset migration)", table, column);
+        }
     }
 
     private void ensureBufferDirectory() {

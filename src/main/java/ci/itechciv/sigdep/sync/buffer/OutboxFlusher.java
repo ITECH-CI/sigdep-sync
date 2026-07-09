@@ -99,12 +99,16 @@ public class OutboxFlusher {
         Class<?> dtoClass = PayloadTypes.classFor(entityType);
         List<Object> records = new ArrayList<>(page.size());
         LocalDateTime maxWatermark = page.get(0).watermark();
+        Long maxSourceId = null; // plus grand source_id de la page (keyset)
         Map<UUID, Long> idBySourceUuid = new HashMap<>(page.size());
         for (OutboxEntry e : page) {
             records.add(mapper.readValue(e.payloadJson(), dtoClass));
             idBySourceUuid.put(e.sourceUuid(), e.id());
             if (e.watermark().isAfter(maxWatermark)) {
                 maxWatermark = e.watermark();
+            }
+            if (e.sourceId() != null && (maxSourceId == null || e.sourceId() > maxSourceId)) {
+                maxSourceId = e.sourceId();
             }
         }
 
@@ -142,9 +146,19 @@ public class OutboxFlusher {
         // Watermark advances only if the whole page succeeded. Otherwise we
         // keep the previous watermark so an extractor restart doesn't skip
         // anything that the hub didn't accept.
+        //
+        // Keyset : quand la page porte un source_id (entités à watermark JOUR,
+        // ex. screening), on avance aussi sync_state.last_id — mais UNIQUEMENT
+        // sur une page 100 % acceptée, dans la même condition que le watermark.
+        // Sur un rejet, ni le watermark ni le last_id ne bougent, donc le
+        // keyset reste cohérent et rien n'est sauté au cycle suivant.
         String status = rejectedRows.isEmpty() ? "OK" : "PARTIAL";
         if (rejectedRows.isEmpty()) {
-            syncState.updateWatermark(entityType, maxWatermark, resp.accepted(), status);
+            if (maxSourceId != null) {
+                syncState.updateKeyset(entityType, maxWatermark, maxSourceId, resp.accepted(), status);
+            } else {
+                syncState.updateWatermark(entityType, maxWatermark, resp.accepted(), status);
+            }
         } else {
             syncState.updateWatermark(entityType,
                     syncState.getWatermark(entityType).orElse(props.watermarkInitial()),

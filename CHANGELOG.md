@@ -3,7 +3,25 @@
 Le format suit [Keep a Changelog](https://keepachangelog.com/) et
 adhère à [Semantic Versioning](https://semver.org/).
 
-## [1.0.3] — 2026-05-21
+> Note : les entrées 2.0.0 → 2.1.0 n'ont pas été reportées ici au fil de
+> l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
+> le suivi ci-dessous.
+
+## [2.1.1] — non publié
+
+### Corrigé
+
+- **Rejeu du dépistage (screening)** : l'extracteur screening utilise
+  désormais un curseur **keyset** `(screening_date, hiv_screening_id)` au
+  lieu d'un simple `screening_date >= ?`. La table amont n'ayant pas de
+  `date_changed`, le curseur à granularité JOUR ne franchissait jamais la
+  frontière du jour courant et ré-extrayait toute la journée à chaque cycle
+  (rejeu absorbé en upsert idempotent côté hub, mais transactions
+  `audit.sync_batch` qui s'accumulaient). Le tie-breaker `id` est persisté
+  (`sync_state.last_id`, `outbox.source_id`) et le curseur n'avance que sur
+  un batch 100 % accepté → robuste aux rejets, aucune ligne sautée.
+  Migrations de schéma idempotentes (bases existantes non impactées).
+  (`73cb042`)
 
 ### Documentation
 

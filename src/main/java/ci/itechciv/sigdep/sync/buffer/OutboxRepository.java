@@ -24,27 +24,30 @@ public class OutboxRepository {
      * instead of inserting a duplicate. Avoids two-way amplification when
      * the extractor's watermark is held back by an unresolved reject.
      */
-    public void enqueue(EntityType entityType, UUID sourceUuid, LocalDateTime watermark, String payloadJson) {
+    public void enqueue(EntityType entityType, UUID sourceUuid, LocalDateTime watermark,
+                        Long sourceId, String payloadJson) {
         int updated = jdbc.update(
                 """
                 UPDATE outbox
-                   SET payload_json = ?, watermark = ?
+                   SET payload_json = ?, watermark = ?, source_id = ?
                  WHERE entity_type  = ?
                    AND source_uuid  = ?
                    AND status IN ('PENDING', 'REJECTED')
                 """,
                 payloadJson,
                 java.sql.Timestamp.valueOf(watermark),
+                sourceId,
                 entityType.name(),
                 sourceUuid.toString());
         if (updated == 0) {
             jdbc.update(
                     """
-                    INSERT INTO outbox (entity_type, source_uuid, watermark, payload_json, status)
-                    VALUES (?, ?, ?, ?, 'PENDING')
+                    INSERT INTO outbox (entity_type, source_uuid, source_id, watermark, payload_json, status)
+                    VALUES (?, ?, ?, ?, ?, 'PENDING')
                     """,
                     entityType.name(),
                     sourceUuid.toString(),
+                    sourceId,
                     java.sql.Timestamp.valueOf(watermark),
                     payloadJson);
         }
@@ -65,7 +68,7 @@ public class OutboxRepository {
     public List<OutboxEntry> findRetryable(EntityType entityType, int limit, int maxAttempts) {
         return jdbc.query(
                 """
-                SELECT id, entity_type, source_uuid, watermark, payload_json,
+                SELECT id, entity_type, source_uuid, source_id, watermark, payload_json,
                        status, attempts, last_error
                 FROM outbox
                 WHERE entity_type = ?
@@ -80,7 +83,8 @@ public class OutboxRepository {
                         UUID.fromString(rs.getString("source_uuid")),
                         rs.getTimestamp("watermark").toLocalDateTime(),
                         rs.getString("payload_json"),
-                        rs.getInt("attempts")),
+                        rs.getInt("attempts"),
+                        readNullableLong(rs, "source_id")),
                 entityType.name(),
                 maxAttempts,
                 limit);
@@ -105,9 +109,16 @@ public class OutboxRepository {
                         UUID.fromString(rs.getString("source_uuid")),
                         rs.getTimestamp("watermark").toLocalDateTime(),
                         rs.getString("payload_json"),
-                        rs.getInt("attempts")),
+                        rs.getInt("attempts"),
+                        null),
                 entityType.name(),
                 limit);
+    }
+
+    /** Lit une colonne INTEGER SQLite nullable en Long (null si SQL NULL). */
+    private static Long readNullableLong(java.sql.ResultSet rs, String col) throws java.sql.SQLException {
+        long v = rs.getLong(col);
+        return rs.wasNull() ? null : v;
     }
 
     public void markSent(List<Long> ids) {
@@ -186,6 +197,7 @@ public class OutboxRepository {
             UUID sourceUuid,
             LocalDateTime watermark,
             String payloadJson,
-            int attempts
+            int attempts,
+            Long sourceId
     ) {}
 }
