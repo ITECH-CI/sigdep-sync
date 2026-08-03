@@ -3,6 +3,10 @@ target/
 *.class
 *.jar
 
+# POM aplati généré par flatten-maven-plugin (version ${revision})
+.flattened-pom.xml
+**/.flattened-pom.xml
+
 # Side-checkout of sigdep-contracts done by the CI inside the workspace
 # (actions/checkout refuses paths outside the workspace).
 .sigdep-contracts/
