@@ -93,7 +93,9 @@ jobs:
         run: mvn -B -DskipTests install
 
       - name: Build sigdep-sync fat jar
-        run: mvn -B -DskipTests package
+        # -Drevision=<version> aligne la version du JAR (finalName, manifest,
+        # /actuator/info) sur le tag Git et l'image Docker.
+        run: mvn -B -DskipTests package -Drevision=${{ steps.tag.outputs.version }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
