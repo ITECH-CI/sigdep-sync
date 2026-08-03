@@ -7,6 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -56,14 +58,101 @@ public class BufferSchemaInitializer {
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot read buffer-schema.sql", e);
         }
-        for (String stmt : ddl.split(";")) {
-            String trimmed = stmt.trim();
-            if (trimmed.isEmpty()) continue;
-            buffer.execute(trimmed);
+        for (String stmt : splitStatements(ddl)) {
+            buffer.execute(stmt);
         }
         addColumnIfMissing("sync_state", "last_id", "INTEGER");
         addColumnIfMissing("outbox", "source_id", "INTEGER");
         log.info("SQLite buffer schema ensured");
+    }
+
+    /**
+     * Découpe un script DDL en instructions individuelles sur ';', de façon
+     * robuste aux commentaires et aux littéraux :
+     * <ul>
+     *   <li>retire les commentaires ligne ({@code -- ...}) et bloc
+     *       ({@code /* ... *&#47;}) avant de découper — un ';' à l'intérieur
+     *       d'un commentaire ne coupe donc pas l'instruction ;</li>
+     *   <li>un {@code --} ou {@code /*} situé dans un littéral entre quotes
+     *       simples n'est PAS traité comme un commentaire ;</li>
+     *   <li>un ';' dans un littéral entre quotes simples ne coupe pas ;</li>
+     *   <li>les fragments vides (après strip/trim) sont ignorés ;</li>
+     *   <li>la dernière instruction n'a pas besoin d'un ';' final.</li>
+     * </ul>
+     * SQLite ne gère pas les quotes échappées par backslash ; une quote
+     * simple se double ({@code ''}) à l'intérieur d'un littéral, ce que le
+     * balayage caractère-par-caractère gère naturellement (la quote fermante
+     * est immédiatement rouverte).
+     */
+    static List<String> splitStatements(String ddl) {
+        List<String> statements = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inLineComment = false;
+        boolean inBlockComment = false;
+        boolean inString = false;
+        int n = ddl.length();
+
+        for (int i = 0; i < n; i++) {
+            char c = ddl.charAt(i);
+            char next = i + 1 < n ? ddl.charAt(i + 1) : '\0';
+
+            if (inLineComment) {
+                // Le commentaire ligne se termine au saut de ligne, qu'on
+                // conserve pour ne pas coller deux tokens.
+                if (c == '\n') {
+                    inLineComment = false;
+                    current.append(c);
+                }
+                continue;
+            }
+            if (inBlockComment) {
+                if (c == '*' && next == '/') {
+                    inBlockComment = false;
+                    i++; // consomme le '/'
+                }
+                continue;
+            }
+            if (inString) {
+                current.append(c);
+                if (c == '\'') {
+                    inString = false; // une '' rouvre aussitôt au tour suivant
+                }
+                continue;
+            }
+
+            // Hors commentaire, hors littéral : détecter ouverture de l'un d'eux.
+            if (c == '-' && next == '-') {
+                inLineComment = true;
+                i++; // consomme le 2e '-'
+                continue;
+            }
+            if (c == '/' && next == '*') {
+                inBlockComment = true;
+                i++; // consomme le '*'
+                continue;
+            }
+            if (c == '\'') {
+                inString = true;
+                current.append(c);
+                continue;
+            }
+            if (c == ';') {
+                addIfNotBlank(statements, current);
+                current.setLength(0);
+                continue;
+            }
+            current.append(c);
+        }
+        // Dernière instruction sans ';' final.
+        addIfNotBlank(statements, current);
+        return statements;
+    }
+
+    private static void addIfNotBlank(List<String> statements, StringBuilder sb) {
+        String trimmed = sb.toString().trim();
+        if (!trimmed.isEmpty()) {
+            statements.add(trimmed);
+        }
     }
 
     /**
