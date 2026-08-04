@@ -2,7 +2,6 @@ package ci.itechciv.sigdep.sync.extractor;
 
 import ci.itechciv.sigdep.contracts.EntityType;
 import ci.itechciv.sigdep.contracts.dto.ScreeningDto;
-import ci.itechciv.sigdep.sync.state.SyncStateRepository;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -34,12 +33,9 @@ import org.springframework.stereotype.Component;
 public class ScreeningExtractor implements DataExtractor {
 
     private final JdbcTemplate localDb;
-    private final SyncStateRepository syncState;
 
-    public ScreeningExtractor(@Qualifier("localJdbcTemplate") JdbcTemplate localDb,
-                              SyncStateRepository syncState) {
+    public ScreeningExtractor(@Qualifier("localJdbcTemplate") JdbcTemplate localDb) {
         this.localDb = localDb;
-        this.syncState = syncState;
     }
 
     @Override public EntityType getEntityType()  { return EntityType.SCREENINGS; }
@@ -58,16 +54,14 @@ public class ScreeningExtractor implements DataExtractor {
      * l'id comme tie-breaker et on filtre en keyset strict :
      * {@code date > d OR (date = d AND id > lastId)}.
      *
-     * Le curseur (last_watermark, last_id) est relu ici et avancé après
-     * extraction sur le dernier enregistrement de la page. Comme les
-     * screenings sont anonymes (aucune dépendance FK), ils ne sont jamais
-     * rejetés par le hub : avancer le keyset dès l'extraction est sûr (pas de
-     * cas PARTIAL à couvrir, contrairement aux entités à FK).
+     * Le curseur keyset {@code (watermark, lastId)} est fourni par le pipeline
+     * (avancé optimistement en mémoire, rejoué depuis sync_state au démarrage)
+     * — l'extracteur ne relit plus lui-même sync_state.last_id.
      */
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
-        LocalDate sinceDate = since.toLocalDate();
-        long sinceId = syncState.getLastId(EntityType.SCREENINGS).orElse(0L);
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDate sinceDate = cursor.watermark().toLocalDate();
+        long sinceId = cursor.lastId();
 
         return localDb.query(
                 """

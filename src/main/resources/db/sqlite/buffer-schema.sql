@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   entity_type   TEXT NOT NULL,
   source_uuid   TEXT NOT NULL,
-  -- Clé numérique de la ligne source (tie-breaker de keyset ; NULL si non
+  -- Clé numérique de la ligne source (tie-breaker de keyset, NULL si non
   -- applicable). Sert au flusher à avancer sync_state.last_id sur les seules
   -- lignes confirmées par le hub.
   source_id     INTEGER,

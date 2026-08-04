@@ -7,6 +7,49 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.1.2] — non publié
+
+### Ajouté
+
+- **Pipeline extraction/push découplé** : l'extraction du lot suivant ne bloque
+  plus sur l'ACK du lot en cours. Profondeur bornée par `SIGDEP_PIPELINE_DEPTH`
+  (défaut 2) ; le pipeline se met en pause si le hub est injoignable, sans
+  sur-extraire. `sync_state` n'avance que sur ACK, ordre de push préservé par
+  entity_type.
+- **Version identifiable** : la version du JAR est alignée sur le tag Git
+  (`-Drevision`), logue au démarrage (version, SHA, date de build), et l'image
+  porte les labels OCI `version`/`revision`/`created`. L'image peut être
+  épinglée par digest dans `docker-compose.site.yml` (procédure au README).
+- **Smoke test de démarrage en CI** : l'image doit démarrer (sans base OpenMRS)
+  et échouer proprement sur config invalide avant d'être poussée sur GHCR.
+
+### Corrigé
+
+- **Pagination keyset composite `(date, id)`** : 10 extracteurs paginaient sur
+  la date seule et pouvaient sauter des lignes quand plus de `batchSize` lignes
+  partageaient le même `date_changed` (migration de masse OpenMRS). Tous passent
+  en keyset `(date, id)` avec tie-breaker sur la PK. Index recommandés
+  documentés (`docs/keyset-indexes.md`).
+- **Rejets de dépendance vs validation** : un `UNKNOWN_PATIENT` (parent pas
+  encore ingéré — décalage d'ordonnancement) ne consomme plus de tentative et
+  ne finit plus en `DEAD_LETTER` ; il est rejoué jusqu'à ce que le parent
+  existe. Compteur de dépendances en attente par entité + log DEBUG de
+  diagnostic. Vérifié : `COALESCE(date_changed, date_created)` extrait bien les
+  lignes jamais modifiées (`date_changed` NULL).
+- **Configuration fail-fast** : l'agent refuse de démarrer (code de sortie non
+  nul) si la config est invalide — URL du hub sans schéma, clé API restée à
+  `changeme`, code site absent… — au lieu d'échouer silencieusement à chaque
+  cycle. Le message nomme la variable d'environnement fautive (clé API masquée).
+- **Découpage DDL du buffer** robuste aux `;` en commentaire/littéral.
+
+### Performance
+
+- **Enqueue de l'outbox par lot** dans une transaction unique + `PRAGMA
+  journal_mode=WAL` / `synchronous=NORMAL` : l'enqueue de 500 lignes passe de
+  ~1,5 s à quelques dizaines de ms.
+- **Dédup des logs d'échec** d'extraction récurrents (1 stack au 1er échec, puis
+  résumé WARN, rappel périodique) au lieu de N stacks identiques par cycle.
+
 ## [2.1.1] — non publié
 
 ### Corrigé

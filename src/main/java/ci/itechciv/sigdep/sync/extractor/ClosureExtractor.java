@@ -75,7 +75,9 @@ public class ClosureExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
         List<EncounterRow> rows = localDb.query(
                 """
                 SELECT e.encounter_id              AS encounter_id,
@@ -88,8 +90,9 @@ public class ClosureExtractor implements DataExtractor {
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid = ?
-                  AND COALESCE(e.date_changed, e.date_created) > ?
-                ORDER BY effective_changed
+                  AND (COALESCE(e.date_changed, e.date_created) > ?
+                       OR (COALESCE(e.date_changed, e.date_created) = ? AND e.encounter_id > ?))
+                ORDER BY effective_changed, e.encounter_id
                 LIMIT ?
                 """,
                 (rs, i) -> new EncounterRow(
@@ -100,7 +103,9 @@ public class ClosureExtractor implements DataExtractor {
                         rs.getBoolean("voided"),
                         rs.getTimestamp("effective_changed").toLocalDateTime()),
                 CLOSURE_ENCOUNTER_UUID,
-                Timestamp.valueOf(since),
+                Timestamp.valueOf(sinceDate),
+                Timestamp.valueOf(sinceDate),
+                sinceId,
                 batchSize);
 
         if (rows.isEmpty()) {
@@ -154,9 +159,9 @@ public class ClosureExtractor implements DataExtractor {
                     extra.isEmpty() ? null : extra,
                     r.voided);
 
-            out.add(new CanonicalRecord(EntityType.CLOSURES, r.encounterUuid, r.changed, dto));
+            out.add(new CanonicalRecord(EntityType.CLOSURES, r.encounterUuid, r.changed, r.encounterId, dto));
         }
-        log.debug("Extracted {} closure(s) since {}", out.size(), since);
+        log.debug("Extracted {} closure(s) since {}", out.size(), sinceDate);
         return out;
     }
 

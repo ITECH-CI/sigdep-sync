@@ -38,6 +38,10 @@ jobs:
           ref="${ref#refs/tags/}"
           echo "tag=$ref" >> $GITHUB_OUTPUT
           echo "version=${ref#v}" >> $GITHUB_OUTPUT
+          # SHA court + date de build (ISO 8601 UTC) — injectés dans le JAR
+          # (build-info) et les labels OCI de l'image.
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
       # Compute the image registry now (rather than as a static env)
       # because docker requires lowercase repository names and
@@ -93,7 +97,13 @@ jobs:
         run: mvn -B -DskipTests install
 
       - name: Build sigdep-sync fat jar
-        run: mvn -B -DskipTests package
+        # -Drevision=<version> aligne la version du JAR (finalName, manifest,
+        # build-info) sur le tag Git et l'image Docker. -Dgit.sha capture le
+        # commit dans META-INF/build-info.properties (logué au démarrage).
+        run: >-
+          mvn -B -DskipTests package
+          -Drevision=${{ steps.tag.outputs.version }}
+          -Dgit.sha=${{ steps.tag.outputs.sha_short }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -105,7 +115,100 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Docker image
+      # Build LOCAL d'abord (chargé dans le démon, PAS poussé) : on veut faire
+      # tourner un smoke test de démarrage avant de publier quoi que ce soit.
+      - name: Build Docker image (local, no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          push: false
+          tags: |
+            ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+            ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
+          # Les métadonnées OCI sont posées par les LABEL du Dockerfile,
+          # alimentés par ces build-args (version = tag, revision = SHA,
+          # created = date de build). Cohérent avec le build-info du JAR.
+          build-args: |
+            IMAGE_VERSION=${{ steps.tag.outputs.version }}
+            IMAGE_REVISION=${{ steps.tag.outputs.sha_short }}
+            IMAGE_CREATED=${{ steps.tag.outputs.created }}
+
+      # Smoke test de démarrage — l'image doit passer les DEUX cas avant d'être
+      # publiée. Empêche de pousser une image qui ne démarre pas ou dont le
+      # fail-fast de configuration est cassé.
+      - name: Smoke test — startup & fail-fast
+        env:
+          IMAGE: ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Cas 1 — démarrage sans base OpenMRS accessible"
+          # Config minimale VALIDE ; MySQL injoignable (l'échec de connexion est
+          # attendu et ne doit PAS faire échouer le test). Succès = le message
+          # 'Started SigdepSyncApplication' apparaît en < 60 s.
+          docker rm -f smoke1 >/dev/null 2>&1 || true
+          docker run -d --name smoke1 \
+            -e SIGDEP_SITE_CODE=SMOKE001 \
+            -e SIGDEP_CENTRAL_API_URL=https://hub.example.org \
+            -e SIGDEP_API_KEY=smoke-ci-key-1234 \
+            -e SIGDEP_LOCAL_DB_URL="jdbc:mysql://127.0.0.1:3306/openmrs?connectTimeout=2000" \
+            "$IMAGE" >/dev/null
+
+          started=false
+          for i in $(seq 1 60); do
+            if docker logs smoke1 2>&1 | grep -q "Started SigdepSyncApplication"; then
+              started=true
+              echo "OK — 'Started SigdepSyncApplication' au bout de ${i}s"
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke1 2>/dev/null)" = "false" ]; then
+              echo "Le conteneur s'est arrêté avant le message de démarrage :"
+              docker logs smoke1 2>&1 | tail -30
+              break
+            fi
+            sleep 1
+          done
+          docker rm -f smoke1 >/dev/null 2>&1 || true
+          if [ "$started" != "true" ]; then
+            echo "::error::Cas 1 échoué — l'agent n'a pas démarré en moins de 60 s."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Cas 2 — configuration invalide (fail-fast)"
+          # SIGDEP_CENTRAL_API_URL sans schéma → le démarrage DOIT échouer avec
+          # un code non nul et un message nommant la variable fautive.
+          docker rm -f smoke2 >/dev/null 2>&1 || true
+          set +e
+          docker run --name smoke2 \
+            -e SIGDEP_SITE_CODE=SMOKE001 \
+            -e SIGDEP_CENTRAL_API_URL=hub.example.org \
+            -e SIGDEP_API_KEY=smoke-ci-key-1234 \
+            -e SIGDEP_LOCAL_DB_URL="jdbc:mysql://127.0.0.1:3306/openmrs" \
+            "$IMAGE" >smoke2.log 2>&1
+          code=$?
+          set -e
+          echo "Code de sortie : $code"
+          cat smoke2.log | tail -20
+          if [ "$code" -eq 0 ]; then
+            echo "::error::Cas 2 échoué — le conteneur aurait dû s'arrêter avec un code non nul."
+            docker rm -f smoke2 >/dev/null 2>&1 || true
+            exit 1
+          fi
+          if ! grep -q "SIGDEP_CENTRAL_API_URL" smoke2.log; then
+            echo "::error::Cas 2 échoué — le message ne nomme pas SIGDEP_CENTRAL_API_URL."
+            docker rm -f smoke2 >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "OK — arrêt en code $code, message nommant SIGDEP_CENTRAL_API_URL"
+          docker rm -f smoke2 >/dev/null 2>&1 || true
+          rm -f smoke2.log
+          echo "::endgroup::"
+
+      # Push SEULEMENT si le smoke test a réussi (l'étape précédente aurait fait
+      # échouer le job sinon). Réutilise le cache de layers du build local.
+      - name: Push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -113,12 +216,10 @@ jobs:
           tags: |
             ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
             ${{ steps.registry.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tag.outputs.version }}
-            org.opencontainers.image.title=SIGDEP-3 edge sync agent
-            org.opencontainers.image.licenses=Proprietary
+          build-args: |
+            IMAGE_VERSION=${{ steps.tag.outputs.version }}
+            IMAGE_REVISION=${{ steps.tag.outputs.sha_short }}
+            IMAGE_CREATED=${{ steps.tag.outputs.created }}
 
       # -----------------------------------------------------------------
       # Windows packaging — assemble a ZIP with everything a site needs

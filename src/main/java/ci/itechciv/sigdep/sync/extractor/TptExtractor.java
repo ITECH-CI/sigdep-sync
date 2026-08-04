@@ -70,8 +70,10 @@ public class TptExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
-        // Both encounter types in one query, paged by effective_changed.
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
+        // Both encounter types in one query, paged by (effective_changed, encounter_id).
         List<EncounterRow> rows = localDb.query(
                 """
                 SELECT e.encounter_id              AS encounter_id,
@@ -85,8 +87,9 @@ public class TptExtractor implements DataExtractor {
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid IN (?, ?)
-                  AND COALESCE(e.date_changed, e.date_created) > ?
-                ORDER BY effective_changed
+                  AND (COALESCE(e.date_changed, e.date_created) > ?
+                       OR (COALESCE(e.date_changed, e.date_created) = ? AND e.encounter_id > ?))
+                ORDER BY effective_changed, e.encounter_id
                 LIMIT ?
                 """,
                 (rs, i) -> new EncounterRow(
@@ -98,7 +101,9 @@ public class TptExtractor implements DataExtractor {
                         rs.getString("encounter_type_uuid"),
                         rs.getTimestamp("effective_changed").toLocalDateTime()),
                 TPT_FOLLOWUP_UUID, TPT_OUTCOME_UUID,
-                Timestamp.valueOf(since),
+                Timestamp.valueOf(sinceDate),
+                Timestamp.valueOf(sinceDate),
+                sinceId,
                 batchSize);
 
         if (rows.isEmpty()) {
@@ -159,9 +164,9 @@ public class TptExtractor implements DataExtractor {
                     extra.isEmpty() ? null : extra,
                     r.voided);
 
-            out.add(new CanonicalRecord(EntityType.TPT_RECORDS, r.encounterUuid, r.changed, dto));
+            out.add(new CanonicalRecord(EntityType.TPT_RECORDS, r.encounterUuid, r.changed, r.encounterId, dto));
         }
-        log.debug("Extracted {} TPT record(s) since {}", out.size(), since);
+        log.debug("Extracted {} TPT record(s) since {}", out.size(), sinceDate);
         return out;
     }
 

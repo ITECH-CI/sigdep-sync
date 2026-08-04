@@ -53,11 +53,15 @@ public class PatientExtractor implements DataExtractor {
     @Override public boolean isEnabled()             { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
+
         // 1. Pick a page of patients ordered by their effective change watermark.
         List<PatientRow> rows = localDb.query(
                 """
                 SELECT
+                  per.person_id                    AS person_id,
                   per.uuid                         AS patient_uuid,
                   per.gender                       AS gender,
                   per.birthdate                    AS birthdate,
@@ -74,17 +78,24 @@ public class PatientExtractor implements DataExtractor {
                         COALESCE(per.date_changed, per.date_created),
                         COALESCE(pat.date_changed, pat.date_created)
                       ) > ?
-                ORDER BY effective_changed
+                   OR (GREATEST(
+                        COALESCE(per.date_changed, per.date_created),
+                        COALESCE(pat.date_changed, pat.date_created)
+                      ) = ? AND per.person_id > ?)
+                ORDER BY effective_changed, per.person_id
                 LIMIT ?
                 """,
                 (rs, i) -> new PatientRow(
+                        rs.getLong("person_id"),
                         UUID.fromString(rs.getString("patient_uuid")),
                         rs.getString("gender"),
                         rs.getDate("birthdate"),
                         rs.getObject("birthdate_estimated") != null && rs.getBoolean("birthdate_estimated"),
                         rs.getBoolean("person_voided") || rs.getBoolean("patient_voided"),
                         rs.getTimestamp("effective_changed").toLocalDateTime()),
-                java.sql.Timestamp.valueOf(since),
+                java.sql.Timestamp.valueOf(sinceDate),
+                java.sql.Timestamp.valueOf(sinceDate),
+                sinceId,
                 batchSize);
 
         if (rows.isEmpty()) {
@@ -113,9 +124,9 @@ public class PatientExtractor implements DataExtractor {
                     null,                       // religion — not yet mapped
                     ids.getOrDefault(r.uuid, List.of()),
                     r.voided);
-            out.add(new CanonicalRecord(EntityType.PATIENTS, r.uuid, r.changed, dto));
+            out.add(new CanonicalRecord(EntityType.PATIENTS, r.uuid, r.changed, r.personId, dto));
         }
-        log.debug("Extracted {} patient(s) since {}", out.size(), since);
+        log.debug("Extracted {} patient(s) since {}", out.size(), sinceDate);
         return out;
     }
 
@@ -204,6 +215,7 @@ public class PatientExtractor implements DataExtractor {
     }
 
     private record PatientRow(
+            long personId,
             UUID uuid,
             String gender,
             Date birthdate,
