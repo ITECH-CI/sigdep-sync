@@ -84,7 +84,7 @@ public class BufferSchemaInitializer {
      * balayage caractère-par-caractère gère naturellement (la quote fermante
      * est immédiatement rouverte).
      */
-    static List<String> splitStatements(String ddl) {
+    public static List<String> splitStatements(String ddl) {
         List<String> statements = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         boolean inLineComment = false;

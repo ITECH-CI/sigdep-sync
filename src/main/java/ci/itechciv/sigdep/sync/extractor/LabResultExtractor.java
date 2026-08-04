@@ -50,7 +50,9 @@ public class LabResultExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
         // Page on encounters; results below come from a join on obs of those encounters.
         // Use COALESCE(date_changed, date_created) like the other extractors.
         List<EncounterRow> encounters = localDb.query(
@@ -64,8 +66,9 @@ public class LabResultExtractor implements DataExtractor {
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid = ?
-                  AND COALESCE(e.date_changed, e.date_created) > ?
-                ORDER BY effective_changed
+                  AND (COALESCE(e.date_changed, e.date_created) > ?
+                       OR (COALESCE(e.date_changed, e.date_created) = ? AND e.encounter_id > ?))
+                ORDER BY effective_changed, e.encounter_id
                 LIMIT ?
                 """,
                 (rs, i) -> new EncounterRow(
@@ -75,7 +78,9 @@ public class LabResultExtractor implements DataExtractor {
                         rs.getTimestamp("encounter_datetime"),
                         rs.getTimestamp("effective_changed").toLocalDateTime()),
                 LAB_ENCOUNTER_UUID,
-                Timestamp.valueOf(since),
+                Timestamp.valueOf(sinceDate),
+                Timestamp.valueOf(sinceDate),
+                sinceId,
                 batchSize);
 
         if (encounters.isEmpty()) {
@@ -176,10 +181,10 @@ public class LabResultExtractor implements DataExtractor {
 
             // Watermark for the per-record outbox flush — use the encounter's
             // effective_changed so resync of a bilan stays atomic.
-            out.add(new CanonicalRecord(EntityType.LAB_RESULTS, o.obsUuid, enc.changed, dto));
+            out.add(new CanonicalRecord(EntityType.LAB_RESULTS, o.obsUuid, enc.changed, enc.encounterId, dto));
         }
         log.debug("Extracted {} lab line(s) from {} bilan(s) since {}",
-                out.size(), encounters.size(), since);
+                out.size(), encounters.size(), sinceDate);
         return out;
     }
 

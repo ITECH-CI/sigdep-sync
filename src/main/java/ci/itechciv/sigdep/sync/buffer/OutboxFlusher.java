@@ -45,6 +45,14 @@ public class OutboxFlusher {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxFlusher.class);
 
+    /**
+     * Code de rejet signalant une DÉPENDANCE non satisfaite (le patient parent
+     * n'est pas encore ingéré) — transitoire, dû à l'ordonnancement, par
+     * opposition à un rejet de VALIDATION (données invalides, permanent). Émis
+     * par les writers du hub (VisitWriter, InitiationWriter, …).
+     */
+    private static final String DEPENDENCY_REJECT_CODE = "UNKNOWN_PATIENT";
+
     private final OutboxRepository outbox;
     private final CentralApiClient api;
     private final ObjectMapper mapper;
@@ -74,26 +82,60 @@ public class OutboxFlusher {
         int rejected = 0;
         int batches = 0;
         while (true) {
-            List<OutboxEntry> page = outbox.findRetryable(
-                    entityType, props.batchSize(), props.maxRejectAttempts());
-            if (page.isEmpty()) break;
-
-            try {
-                PushResult r = pushPage(entityType, page);
-                total += page.size();
-                accepted += r.accepted;
-                rejected += r.rejected;
-                batches++;
-            } catch (IOException e) {
-                List<Long> ids = page.stream().map(OutboxEntry::id).toList();
-                outbox.markFailed(ids, e.getMessage());
-                log.warn("Push failed for {} rows ({}), they remain PENDING and will retry: {}",
-                        page.size(), entityType, e.getMessage());
+            PagePushResult r = pushOnePage(entityType);
+            if (r.empty()) break;
+            total += r.accepted() + r.rejected();
+            accepted += r.accepted();
+            rejected += r.rejected();
+            batches++;
+            if (r.networkFailure()) {
                 return new FlushResult(total, accepted, rejected, batches, true);
             }
         }
         return new FlushResult(total, accepted, rejected, batches, false);
     }
+
+    /**
+     * Pousse EXACTEMENT une page de l'outbox pour cette entité (la plus
+     * prioritaire, cf. {@link OutboxRepository#findRetryable}) et renvoie son
+     * résultat. Brique unitaire du pipeline extraction/push : un appel = un
+     * round-trip réseau = une unité de profondeur.
+     *
+     * <ul>
+     *   <li>{@code empty=true} : plus rien à pousser (outbox vide pour cette
+     *       entité) — pas de round-trip effectué.</li>
+     *   <li>{@code networkFailure=true} : le hub était injoignable ; les lignes
+     *       restent PENDING (rejouées plus tard). Le watermark n'a pas bougé.</li>
+     *   <li>sinon : la page a été acquittée (accepted/rejected renseignés) et le
+     *       watermark a avancé si et seulement si la page était 100 % acceptée
+     *       (logique inchangée de {@link #pushPage}).</li>
+     * </ul>
+     */
+    public PagePushResult pushOnePage(EntityType entityType) {
+        List<OutboxEntry> page = outbox.findRetryable(
+                entityType, props.batchSize(), props.maxRejectAttempts());
+        if (page.isEmpty()) {
+            return new PagePushResult(true, false, 0, 0, 0);
+        }
+        try {
+            PushResult r = pushPage(entityType, page);
+            return new PagePushResult(false, false, r.accepted, r.rejected, r.dependencyRejected);
+        } catch (IOException e) {
+            List<Long> ids = page.stream().map(OutboxEntry::id).toList();
+            outbox.markFailed(ids, e.getMessage());
+            log.warn("Push failed for {} rows ({}), they remain PENDING and will retry: {}",
+                    page.size(), entityType, e.getMessage());
+            return new PagePushResult(false, true, 0, 0, 0);
+        }
+    }
+
+    /**
+     * Résultat d'un push d'UNE page. {@code dependencyRejected} = sous-ensemble
+     * de {@code rejected} dû à une dépendance non satisfaite (UNKNOWN_PATIENT),
+     * transitoire — à distinguer des rejets de validation dans les compteurs.
+     */
+    public record PagePushResult(boolean empty, boolean networkFailure,
+                                 int accepted, int rejected, int dependencyRejected) {}
 
     private PushResult pushPage(EntityType entityType, List<OutboxEntry> page) throws IOException {
         Class<?> dtoClass = PayloadTypes.classFor(entityType);
@@ -122,18 +164,40 @@ public class OutboxFlusher {
         log.info("ACK {} entityType={} accepted={} rejected={}",
                 resp.batchId(), entityType, resp.accepted(), resp.rejected());
 
-        // Build the per-row split: every reject the hub returned (matched by
-        // sourceUuid) gets markRejected; everything else in the batch is SENT.
+        // Per-row split : on sépare les rejets de DÉPENDANCE (UNKNOWN_PATIENT,
+        // transitoires) des rejets de VALIDATION (UPSERT_FAILED…, permanents).
+        // Le message stocké en last_error commence par le code, ce qui permet
+        // au compteur pendingDependencyCount de reconnaître les dépendances.
         List<RecordError> errors = resp.errors() == null ? List.of() : resp.errors();
         Set<Long> rejectedIds = new HashSet<>(errors.size());
-        List<RejectedId> rejectedRows = new ArrayList<>(errors.size());
+        List<RejectedId> dependencyRows = new ArrayList<>();
+        List<RejectedId> validationRows = new ArrayList<>();
         for (RecordError err : errors) {
             Long rowId = idBySourceUuid.get(err.sourceUuid());
             if (rowId == null) continue; // hub returned an unknown uuid — skip
             rejectedIds.add(rowId);
             String message = (err.code() == null ? "?" : err.code())
                     + (err.message() == null ? "" : ": " + err.message());
-            rejectedRows.add(new RejectedId(rowId, message));
+            boolean isDependency = DEPENDENCY_REJECT_CODE.equals(err.code());
+            if (isDependency) {
+                dependencyRows.add(new RejectedId(rowId, message));
+
+                // DIAGNOSTIC : un rejet de DÉPENDANCE signifie que le patient
+                // parent n'a pas encore été ingéré — probable décalage
+                // d'ordonnancement entre extracteurs (chacun avance sur son
+                // propre watermark). On trace l'uuid du parent manquant, le type
+                // d'entité rejetée, et l'état du watermark de PATIENTS.
+                if (log.isDebugEnabled()) {
+                    String parentUuid = err.message() == null ? "?" : err.message();
+                    LocalDateTime patientsWatermark =
+                            syncState.getWatermark(EntityType.PATIENTS).orElse(null);
+                    log.debug("Rejet de DÉPENDANCE : entité={} sourceUuid={} — {} ;"
+                                    + " watermark PATIENTS au moment du rejet = {}",
+                            entityType, err.sourceUuid(), parentUuid, patientsWatermark);
+                }
+            } else {
+                validationRows.add(new RejectedId(rowId, message));
+            }
         }
         List<Long> acceptedIds = new ArrayList<>(page.size() - rejectedIds.size());
         for (OutboxEntry e : page) {
@@ -141,7 +205,13 @@ public class OutboxFlusher {
         }
 
         outbox.markSent(acceptedIds);
-        outbox.markRejected(rejectedRows, props.maxRejectAttempts());
+        // Dépendances : PENDING sans consommer de tentative (un décalage
+        // d'ordonnancement ne doit jamais produire un DEAD_LETTER définitif).
+        outbox.markDependencyPending(dependencyRows);
+        // Validation : consomme une tentative, DEAD_LETTER après maxAttempts.
+        outbox.markValidationRejected(validationRows, props.maxRejectAttempts());
+
+        boolean allAccepted = dependencyRows.isEmpty() && validationRows.isEmpty();
 
         // Watermark advances only if the whole page succeeded. Otherwise we
         // keep the previous watermark so an extractor restart doesn't skip
@@ -150,10 +220,10 @@ public class OutboxFlusher {
         // Keyset : quand la page porte un source_id (entités à watermark JOUR,
         // ex. screening), on avance aussi sync_state.last_id — mais UNIQUEMENT
         // sur une page 100 % acceptée, dans la même condition que le watermark.
-        // Sur un rejet, ni le watermark ni le last_id ne bougent, donc le
-        // keyset reste cohérent et rien n'est sauté au cycle suivant.
-        String status = rejectedRows.isEmpty() ? "OK" : "PARTIAL";
-        if (rejectedRows.isEmpty()) {
+        // Sur un rejet (dépendance OU validation), ni le watermark ni le last_id
+        // ne bougent, donc rien n'est sauté au cycle suivant.
+        String status = allAccepted ? "OK" : "PARTIAL";
+        if (allAccepted) {
             if (maxSourceId != null) {
                 syncState.updateKeyset(entityType, maxWatermark, maxSourceId, resp.accepted(), status);
             } else {
@@ -164,10 +234,12 @@ public class OutboxFlusher {
                     syncState.getWatermark(entityType).orElse(props.watermarkInitial()),
                     resp.accepted(), status);
         }
-        return new PushResult(resp.accepted(), resp.rejected());
+        return new PushResult(resp.accepted(), resp.rejected(),
+                dependencyRows.size(), validationRows.size());
     }
 
-    private record PushResult(int accepted, int rejected) {}
+    private record PushResult(int accepted, int rejected,
+                              int dependencyRejected, int validationRejected) {}
 
     public record FlushResult(
             int rowsAcked,       // accepted + rejected — i.e. everything the hub touched

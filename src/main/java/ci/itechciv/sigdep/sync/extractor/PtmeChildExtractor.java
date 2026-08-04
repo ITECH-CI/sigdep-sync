@@ -38,10 +38,13 @@ public class PtmeChildExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
         return localDb.query(
                 """
-                SELECT c.uuid                          AS c_uuid,
+                SELECT c.child_id                      AS child_id,
+                       c.uuid                          AS c_uuid,
                        m.uuid                          AS mother_uuid,
                        c.child_followup_number,
                        c.birth_date,
@@ -68,10 +71,15 @@ public class PtmeChildExtractor implements DataExtractor {
                         COALESCE(c.date_changed, c.date_created),
                         COALESCE(f.date_changed, f.date_created, c.date_created)
                       ) > ?
-                ORDER BY effective_changed
+                   OR (GREATEST(
+                        COALESCE(c.date_changed, c.date_created),
+                        COALESCE(f.date_changed, f.date_created, c.date_created)
+                      ) = ? AND c.child_id > ?)
+                ORDER BY effective_changed, c.child_id
                 LIMIT ?
                 """,
                 (rs, i) -> {
+                    long childId = rs.getLong("child_id");
                     UUID uuid = UUID.fromString(rs.getString("c_uuid"));
                     String motherUuidStr = rs.getString("mother_uuid");
                     UUID motherUuid = motherUuidStr == null ? null : UUID.fromString(motherUuidStr);
@@ -134,9 +142,9 @@ public class PtmeChildExtractor implements DataExtractor {
                             rs.getBoolean("c_voided"));
 
                     LocalDateTime changed = rs.getTimestamp("effective_changed").toLocalDateTime();
-                    return new CanonicalRecord(EntityType.PTME_CHILDREN, uuid, changed, dto);
+                    return new CanonicalRecord(EntityType.PTME_CHILDREN, uuid, changed, childId, dto);
                 },
-                Timestamp.valueOf(since), batchSize);
+                Timestamp.valueOf(sinceDate), Timestamp.valueOf(sinceDate), sinceId, batchSize);
     }
 
     private static void put(Map<String, Object> m, String k, Object v) {
