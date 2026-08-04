@@ -7,6 +7,20 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.1.3] — non publié
+
+### Corrigé
+
+- **`SQLITE_BUSY` (« database is locked ») sous charge** : régression introduite
+  par le pipeline découplé de la 2.1.2. Le producteur (`enqueueBatch`) et le
+  consommateur (`markSent`/`markRejected`/`updateWatermark`) écrivaient en
+  concurrence sur le buffer SQLite ; sur un gros backfill (p. ex. 5000+
+  lab_results en une transaction), l'enqueue tenait le verrou d'écriture plus
+  longtemps que le `busy_timeout` et l'autre écrivain échouait. Les écritures du
+  buffer sont désormais **sérialisées** par un verrou applicatif
+  (`BufferWriteLock`), ce qui élimine la contention à la racine. `busy_timeout`
+  porté à 5 s en complément.
+
 ## [2.1.2] — non publié
 
 ### Ajouté

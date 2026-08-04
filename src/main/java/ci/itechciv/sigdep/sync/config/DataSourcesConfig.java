@@ -47,6 +47,14 @@ public class DataSourcesConfig {
         SQLiteConfig config = new SQLiteConfig();
         config.setJournalMode(SQLiteConfig.JournalMode.WAL);
         config.setSynchronous(SQLiteConfig.SynchronousMode.NORMAL);
+        // busy_timeout OBLIGATOIRE depuis le pipeline découplé : deux threads
+        // écrivent en concurrence sur le buffer (le producteur enqueue pendant
+        // que le consommateur markSent/markRejected). SQLite n'autorise qu'UN
+        // écrivain à la fois — sans timeout, la 2e écriture échoue aussitôt sur
+        // SQLITE_BUSY (database is locked). Avec 5 s, la connexion attend que
+        // l'écrivain courant libère le verrou (une transaction dure ~ms), ce qui
+        // sérialise proprement les écritures sans erreur.
+        config.setBusyTimeout(5_000);
         SQLiteDataSource ds = new SQLiteDataSource(config);
         ds.setUrl(jdbcUrl);
         return ds;

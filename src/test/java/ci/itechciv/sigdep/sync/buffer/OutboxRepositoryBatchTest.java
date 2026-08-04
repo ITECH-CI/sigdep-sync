@@ -52,7 +52,7 @@ class OutboxRepositoryBatchTest {
         dbFile = tmp.resolve("buffer.sqlite");
         jdbc = openBuffer(dbFile);
         applySchema(jdbc);
-        repo = new OutboxRepository(jdbc);
+        repo = new OutboxRepository(jdbc, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
     }
 
     @AfterEach

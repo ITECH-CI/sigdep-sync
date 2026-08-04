@@ -1,6 +1,7 @@
 package ci.itechciv.sigdep.sync.state;
 
 import ci.itechciv.sigdep.contracts.EntityType;
+import ci.itechciv.sigdep.sync.buffer.BufferWriteLock;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -11,9 +12,12 @@ import org.springframework.stereotype.Repository;
 public class SyncStateRepository {
 
     private final JdbcTemplate jdbc;
+    private final BufferWriteLock writeLock;
 
-    public SyncStateRepository(@Qualifier("bufferJdbcTemplate") JdbcTemplate jdbc) {
+    public SyncStateRepository(@Qualifier("bufferJdbcTemplate") JdbcTemplate jdbc,
+                               BufferWriteLock writeLock) {
         this.jdbc = jdbc;
+        this.writeLock = writeLock;
     }
 
     public Optional<LocalDateTime> getWatermark(EntityType entityType) {
@@ -27,7 +31,7 @@ public class SyncStateRepository {
     }
 
     public void updateWatermark(EntityType entityType, LocalDateTime watermark, int recordsSent, String status) {
-        jdbc.update(
+        writeLock.runExclusively(() -> jdbc.update(
                 """
                 INSERT INTO sync_state (entity_type, last_watermark, last_run_at, last_status, records_sent)
                 VALUES (?, ?, datetime('now'), ?, ?)
@@ -41,7 +45,7 @@ public class SyncStateRepository {
                 java.sql.Timestamp.valueOf(watermark),
                 status,
                 recordsSent
-        );
+        ));
     }
 
     /**
@@ -68,7 +72,7 @@ public class SyncStateRepository {
      */
     public void updateKeyset(EntityType entityType, LocalDateTime watermark, long lastId,
                              int recordsSent, String status) {
-        jdbc.update(
+        writeLock.runExclusively(() -> jdbc.update(
                 """
                 INSERT INTO sync_state (entity_type, last_watermark, last_id, last_run_at, last_status, records_sent)
                 VALUES (?, ?, ?, datetime('now'), ?, ?)
@@ -84,6 +88,6 @@ public class SyncStateRepository {
                 lastId,
                 status,
                 recordsSent
-        );
+        ));
     }
 }

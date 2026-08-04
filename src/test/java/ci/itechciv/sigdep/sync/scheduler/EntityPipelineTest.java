@@ -147,8 +147,8 @@ class EntityPipelineTest {
     }
 
     private EntityPipeline pipeline(JdbcTemplate buffer, DataExtractor extractor, CentralApiClient hub) {
-        OutboxRepository outbox = new OutboxRepository(buffer);
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        OutboxRepository outbox = new OutboxRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         OutboxEnqueuer enqueuer = new OutboxEnqueuer(outbox, new ObjectMapper());
         OutboxFlusher flusher = new OutboxFlusher(outbox, hub, new ObjectMapper(), state, props());
         return new EntityPipeline(
@@ -176,7 +176,7 @@ class EntityPipelineTest {
                 "SELECT count(*) FROM outbox WHERE status IN ('PENDING','REJECTED')", Integer.class);
         assertThat(remaining).isZero();
         // sync_state a avancé (watermark non nul).
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         assertThat(state.getWatermark(ENTITY)).isPresent();
     }
 
@@ -197,7 +197,7 @@ class EntityPipelineTest {
                 .as("pas de sur-extraction : extraction bornée par la profondeur")
                 .isLessThanOrEqualTo(props().pipelineDepth() + 1);
         // Aucun watermark ne doit avoir avancé (aucun ACK).
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         assertThat(state.getWatermark(ENTITY))
                 .as("sync_state ne bouge pas sur un lot non acquitté")
                 .isEmpty();
@@ -217,7 +217,7 @@ class EntityPipelineTest {
         // des lignes restent en outbox (simule un crash avant l'ACK).
         FakeExtractor first = new FakeExtractor(100);
         pipeline(buffer, first, new FakeHub(0, true)).runCycle();
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         assertThat(state.getWatermark(ENTITY)).as("aucun ACK au 1er run").isEmpty();
         int pendingBefore = buffer.queryForObject(
                 "SELECT count(*) FROM outbox WHERE status='PENDING'", Integer.class);
