@@ -140,8 +140,8 @@ class KeysetPaginationTest {
     }
 
     private EntityPipeline pipeline(JdbcTemplate buffer, DataExtractor extractor) {
-        OutboxRepository outbox = new OutboxRepository(buffer);
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        OutboxRepository outbox = new OutboxRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         OutboxEnqueuer enqueuer = new OutboxEnqueuer(outbox, new ObjectMapper());
         OutboxFlusher flusher = new OutboxFlusher(outbox, new AcceptAllHub(), new ObjectMapper(), state, props());
         return new EntityPipeline(
@@ -176,7 +176,7 @@ class KeysetPaginationTest {
                 .isEqualTo(total);
         assertThat(pushedUuids(buffer)).as("aucun doublon").hasSize(total);
         // Le curseur keyset a avancé jusqu'au dernier id du groupe.
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         assertThat(state.getLastId(ENTITY)).contains((long) total);
     }
 
@@ -194,8 +194,8 @@ class KeysetPaginationTest {
         // 1er run : pipeline profondeur 2, mais on ARRÊTE tôt en simulant un
         // "redémarrage" — on ne joue qu'un cycle partiel via un plafond de
         // pages à 1 (une seule page de batchSize part, puis on coupe).
-        OutboxRepository outbox = new OutboxRepository(buffer);
-        SyncStateRepository state = new SyncStateRepository(buffer);
+        OutboxRepository outbox = new OutboxRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
+        SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         OutboxEnqueuer enqueuer = new OutboxEnqueuer(outbox, new ObjectMapper());
         OutboxFlusher flusher = new OutboxFlusher(outbox, new AcceptAllHub(), new ObjectMapper(), state, props());
         new EntityPipeline(new KeysetExtractor(data), BATCH, 1, /*maxPages*/ 1, EPOCH,

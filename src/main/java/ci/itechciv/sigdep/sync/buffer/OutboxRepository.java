@@ -17,9 +17,12 @@ import org.springframework.stereotype.Repository;
 public class OutboxRepository {
 
     private final JdbcTemplate jdbc;
+    private final BufferWriteLock writeLock;
 
-    public OutboxRepository(@Qualifier("bufferJdbcTemplate") JdbcTemplate jdbc) {
+    public OutboxRepository(@Qualifier("bufferJdbcTemplate") JdbcTemplate jdbc,
+                            BufferWriteLock writeLock) {
         this.jdbc = jdbc;
+        this.writeLock = writeLock;
     }
 
     /** Une ligne à mettre en file. */
@@ -49,7 +52,10 @@ public class OutboxRepository {
         if (rows.isEmpty()) {
             return;
         }
-        jdbc.execute((Connection conn) -> {
+        // Sous verrou d'écriture : la transaction d'enqueue (potentiellement
+        // longue sur un gros backfill) ne doit pas chevaucher un markSent du
+        // consommateur → sinon SQLITE_BUSY.
+        writeLock.runExclusively(() -> jdbc.execute((Connection conn) -> {
             boolean previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
             try {
@@ -63,7 +69,7 @@ public class OutboxRepository {
             } finally {
                 conn.setAutoCommit(previousAutoCommit);
             }
-        });
+        }));
     }
 
     /**
@@ -201,9 +207,9 @@ public class OutboxRepository {
             return;
         }
         String placeholders = String.join(",", ids.stream().map(i -> "?").toList());
-        jdbc.update(
+        writeLock.runExclusively(() -> jdbc.update(
                 "UPDATE outbox SET status='SENT', sent_at=datetime('now') WHERE id IN (" + placeholders + ")",
-                ids.toArray());
+                ids.toArray()));
     }
 
     public void markFailed(List<Long> ids, String error) {
@@ -216,10 +222,10 @@ public class OutboxRepository {
         for (int i = 0; i < ids.size(); i++) {
             params[i + 1] = ids.get(i);
         }
-        jdbc.update(
+        writeLock.runExclusively(() -> jdbc.update(
                 "UPDATE outbox SET attempts = attempts + 1, last_error = ?, status='PENDING' "
                         + "WHERE id IN (" + placeholders + ")",
-                params);
+                params));
     }
 
     /**
@@ -230,22 +236,24 @@ public class OutboxRepository {
      */
     public void markValidationRejected(List<RejectedId> rejects, int maxAttempts) {
         if (rejects.isEmpty()) return;
-        for (RejectedId r : rejects) {
-            jdbc.update(
-                    """
-                    UPDATE outbox
-                       SET attempts    = attempts + 1,
-                           last_error  = ?,
-                           status      = CASE WHEN attempts + 1 >= ?
-                                              THEN 'DEAD_LETTER'
-                                              ELSE 'REJECTED'
-                                         END
-                     WHERE id = ?
-                    """,
-                    r.errorMessage,
-                    maxAttempts,
-                    r.id);
-        }
+        writeLock.runExclusively(() -> {
+            for (RejectedId r : rejects) {
+                jdbc.update(
+                        """
+                        UPDATE outbox
+                           SET attempts    = attempts + 1,
+                               last_error  = ?,
+                               status      = CASE WHEN attempts + 1 >= ?
+                                                  THEN 'DEAD_LETTER'
+                                                  ELSE 'REJECTED'
+                                             END
+                         WHERE id = ?
+                        """,
+                        r.errorMessage,
+                        maxAttempts,
+                        r.id);
+            }
+        });
     }
 
     /**
@@ -258,17 +266,19 @@ public class OutboxRepository {
      */
     public void markDependencyPending(List<RejectedId> rejects) {
         if (rejects.isEmpty()) return;
-        for (RejectedId r : rejects) {
-            jdbc.update(
-                    """
-                    UPDATE outbox
-                       SET last_error = ?,
-                           status     = 'REJECTED'
-                     WHERE id = ?
-                    """,
-                    r.errorMessage,
-                    r.id);
-        }
+        writeLock.runExclusively(() -> {
+            for (RejectedId r : rejects) {
+                jdbc.update(
+                        """
+                        UPDATE outbox
+                           SET last_error = ?,
+                               status     = 'REJECTED'
+                         WHERE id = ?
+                        """,
+                        r.errorMessage,
+                        r.id);
+            }
+        });
     }
 
     /** Counters for the per-cycle log line. */
