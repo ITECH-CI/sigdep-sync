@@ -11,6 +11,10 @@ sigdep:
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00
     max-reject-attempts: ${SIGDEP_MAX_REJECT_ATTEMPTS:10}
+    # Profondeur du pipeline extraction/push (lots « en vol » par entity_type).
+    # 1 = séquentiel (historique) ; 2 (défaut) recouvre l'extraction du lot
+    # suivant avec le round-trip réseau du lot en cours.
+    pipeline-depth: ${SIGDEP_PIPELINE_DEPTH:2}
     # OkHttp timeouts to the hub. Raise read/write for sites with a big
     # backfill on a slow link (LAB_RESULTS in particular can take time
     # to serialise + persist). Defaults match the historical hard-coded
@@ -22,6 +26,10 @@ sigdep:
     # Clé API du site (auth v2.0). Générée dans la console hub
     # (Sites → « Gérer » → Générer une clé), copiée ici une seule fois.
     api-key: ${SIGDEP_API_KEY:}
+    # URL JDBC de la base OpenMRS locale, exposée à SyncProperties pour la
+    # validation au démarrage. Même variable que local-db.jdbc-url ci-dessous
+    # (que DataSourcesConfig utilise pour construire la DataSource).
+    local-db-url: ${SIGDEP_LOCAL_DB_URL:jdbc:mysql://localhost:3306/openmrs?readOnly=true&useSSL=false}
     identifier-mapping:
       # OpenMRS patient_identifier_type.name  ->  core.identifier_types.code
       # Adjust for site-specific naming. Unmapped types are silently dropped.
@@ -37,6 +45,11 @@ sigdep:
     buffer-db:
       jdbc-url: jdbc:sqlite:${SIGDEP_BUFFER_PATH:/var/lib/sigdep-agent/buffer.sqlite}
       driver-class-name: org.sqlite.JDBC
+      # Les PRAGMA journal_mode=WAL et synchronous=NORMAL sont posés dans
+      # DataSourcesConfig via SQLiteConfig (les appliquer ici en
+      # connection-init-sql ne marche PAS : le driver xerial n'exécute que la
+      # 1re instruction d'une string multi-PRAGMA). Voir la doc du compromis de
+      # durabilité dans DataSourcesConfig.bufferDataSource().
     backfill:
       enabled: false
       max-requests-per-minute: 30
