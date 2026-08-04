@@ -246,22 +246,33 @@ silencieusement perdu en chemin vers le hub. Trois briques :
    L'agent peut réémettre le même enregistrement n'importe combien de
    fois sans créer de doublons.
 2. **L'outbox SQLite** comme file durable. Chaque extraction y passe ;
-   l'agent n'avance sa watermark qu'une fois la page totalement
-   acceptée par le hub. Un crash en milieu de cycle déclenche un
-   nouveau renvoi à partir de la dernière watermark persistée, pas du
-   point où l'extraction s'était arrêtée.
-3. **Boucle de réessai par enregistrement pour les rejets côté hub.**
-   Quand le hub répond `accepted=N, rejected=M`, l'agent sépare la
-   page par `sourceUuid` : les lignes acceptées passent en `SENT`,
-   les rejetées en `REJECTED` avec le code et le message d'erreur. Au
-   cycle suivant, les lignes `REJECTED` sont repoussées **avant** les
-   nouvelles extractions, ce qui résout naturellement un ordre FK
-   incohérent (`UNKNOWN_PATIENT` lors d'un backfill initial) dès que
-   l'enregistrement parent manquant arrive.
+   l'agent n'avance son curseur persistant (`sync_state`) qu'une fois la
+   page totalement acceptée par le hub. Un crash en milieu de cycle
+   déclenche un nouveau renvoi à partir du dernier curseur persisté, pas
+   du point où l'extraction s'était arrêtée. La pagination est un
+   **keyset composite `(date_changed, id)`** : plus de `batchSize` lignes
+   au même `date_changed` (fréquent après une migration de masse OpenMRS)
+   ne sont jamais sautées. Voir [docs/keyset-indexes.md](docs/keyset-indexes.md)
+   pour les index recommandés sur la base source.
+3. **Réessai par enregistrement, distinguant dépendance et validation.**
+   Quand le hub répond `accepted=N, rejected=M`, l'agent sépare la page
+   par `sourceUuid`. Les lignes acceptées passent en `SENT`. Pour les
+   rejetées, deux cas :
+   - **rejet de dépendance** (`UNKNOWN_PATIENT` — le patient parent n'est
+     pas encore ingéré, simple décalage d'ordonnancement) : la ligne passe
+     en `REJECTED` **sans consommer de tentative** et est rejouée à chaque
+     cycle jusqu'à ce que le parent existe. Un décalage d'ordre ne produit
+     donc jamais de `DEAD_LETTER` définitif.
+   - **rejet de validation** (`UPSERT_FAILED`… — donnée invalide) : la
+     ligne consomme une tentative et bascule en `DEAD_LETTER` après
+     `SIGDEP_MAX_REJECT_ATTEMPTS` (défaut 10).
 
-Après `SIGDEP_MAX_REJECT_ATTEMPTS` réessais infructueux (défaut 10),
-la ligne passe en `DEAD_LETTER`. Le hub enregistre chaque rejet dans
-`audit.rejected_record`, exposé sur la page **Synchronisation →
+L'extraction et le push sont **découplés** (pipeline borné par
+`SIGDEP_PIPELINE_DEPTH`) : le lot suivant s'extrait pendant que le lot en
+cours attend son ACK, sans jamais sur-extraire si le hub est lent.
+
+Le hub enregistre chaque rejet dans `audit.rejected_record`, exposé sur la
+page **Synchronisation →
 Rejets** de la console : un admin voit l'UUID source exact, le
 message d'erreur, et clique « Résoudre » une fois la donnée corrigée.
 
