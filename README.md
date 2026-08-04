@@ -179,6 +179,47 @@ cp deploy/.env.example /opt/sigdep-sync/.env
 docker compose -f /opt/sigdep-sync/docker-compose.yml up -d
 ```
 
+#### Épingler l'image par digest (recommandé en production)
+
+Un tag (`:2.1.2`, `:latest`) peut être re-poussé vers un contenu différent ;
+un **digest** `sha256:` est immuable et garantit que le site fait tourner
+exactement l'image validée. Récupérer le digest d'une version publiée :
+
+```bash
+docker buildx imagetools inspect ghcr.io/itech-ci/sigdep-sync:2.1.2 \
+  --format '{{.Manifest.Digest}}'
+# → sha256:abc123…
+```
+
+Puis le figer dans le `.env` du site (le compose lit `SIGDEP_SYNC_IMAGE` en
+priorité sur `SIGDEP_SYNC_TAG`) :
+
+```bash
+# /opt/sigdep-sync/.env
+SIGDEP_SYNC_IMAGE=ghcr.io/itech-ci/sigdep-sync@sha256:abc123…
+```
+
+#### Mettre à jour un site vers une nouvelle version
+
+```bash
+cd /opt/sigdep-sync
+# 1. Récupérer le digest de la nouvelle version (cf. ci-dessus) et mettre à
+#    jour SIGDEP_SYNC_IMAGE dans .env.
+# 2. Tirer la nouvelle image et recréer le conteneur :
+docker compose pull
+docker compose up -d
+# 3. Vérifier la version qui tourne — une ligne INFO au démarrage :
+docker compose logs --since 2m sigdep-sync | grep "sigdep-sync démarré"
+#    → sigdep-sync démarré — version=2.1.2 sha=<sha court> build=<date>
+#    On peut aussi lire les labels de l'image :
+docker inspect --format '{{json .Config.Labels}}' \
+  "$(docker compose images -q sigdep-sync)"
+```
+
+Le buffer SQLite et l'état de synchronisation vivent dans le volume
+`sigdep-buffer` — une mise à jour d'image les préserve. **Ne jamais**
+`docker compose down -v` (cela réinitialiserait le curseur de sync).
+
 ### Mode C — Service Windows (WinSW)
 
 Une archive ZIP autonome est attachée à chaque Release GitHub :
