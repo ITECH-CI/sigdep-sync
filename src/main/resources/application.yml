@@ -23,6 +23,13 @@ sigdep:
       connect-timeout-seconds: ${SIGDEP_HTTP_CONNECT_TIMEOUT_SECONDS:10}
       read-timeout-seconds: ${SIGDEP_HTTP_READ_TIMEOUT_SECONDS:60}
       write-timeout-seconds: ${SIGDEP_HTTP_WRITE_TIMEOUT_SECONDS:60}
+      # Résilience du push : retry backoff+jitter sur un échec de TRANSPORT
+      # (réseau, 5xx, 429) avant de mettre l'entité en pause. Évite qu'une
+      # coupure d'une seconde coûte un cycle entier (défaut historique = pause
+      # immédiate, soit maxRetries=0).
+      max-retries: ${SIGDEP_HTTP_MAX_RETRIES:5}
+      retry-initial-delay-ms: ${SIGDEP_HTTP_RETRY_INITIAL_DELAY_MS:500}
+      retry-max-delay-ms: ${SIGDEP_HTTP_RETRY_MAX_DELAY_MS:30000}
     # Clé API du site (auth v2.0). Générée dans la console hub
     # (Sites → « Gérer » → Générer une clé), copiée ici une seule fois.
     api-key: ${SIGDEP_API_KEY:}

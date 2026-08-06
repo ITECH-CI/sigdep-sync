@@ -74,7 +74,14 @@ public record SyncProperties(
     public record Http(
             int connectTimeoutSeconds,
             int readTimeoutSeconds,
-            int writeTimeoutSeconds
+            int writeTimeoutSeconds,
+            // Résilience du push : sur un échec de TRANSPORT (réseau, 5xx, 429),
+            // on ré-essaie le même lot avant de mettre l'entité en pause. Backoff
+            // exponentiel borné + jitter. maxRetries=0 restaure le comportement
+            // historique (pause immédiate).
+            int maxRetries,
+            long retryInitialDelayMs,
+            long retryMaxDelayMs
     ) {}
 
     private static final String API_KEY_TEMPLATE = "changeme";
