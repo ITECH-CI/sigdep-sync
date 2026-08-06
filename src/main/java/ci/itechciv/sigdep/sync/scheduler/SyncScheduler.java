@@ -150,7 +150,7 @@ public class SyncScheduler {
     private void runOne(DataExtractor x) {
         EntityPipeline pipeline = new EntityPipeline(
                 x,
-                props.batchSize(),
+                props.batchSizeFor(x.getEntityType()),
                 props.pipelineDepth(),
                 MAX_PAGES_PER_CYCLE,
                 props.watermarkInitial(),

@@ -67,7 +67,7 @@ class PushRetryTest {
     private static SyncProperties props(int maxRetries) {
         return new SyncProperties(
                 "SITE", "https://hub.example.org", 500, 15, LocalDateTime.of(1970, 1, 1, 0, 0),
-                java.util.Map.of(), "api-key-1234", "jdbc:mysql://localhost/openmrs",
+                java.util.Map.of(), java.util.Map.of(), "api-key-1234", "jdbc:mysql://localhost/openmrs",
                 new SyncProperties.Backfill(false, 30, "0 0 22 * * MON-FRI"),
                 3, 2,
                 new SyncProperties.Http(10, 60, 60, maxRetries, 5L, 20L)); // délais courts

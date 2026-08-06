@@ -7,6 +7,13 @@ sigdep:
     site-code: ${SIGDEP_SITE_CODE:UNKNOWN}
     central-api-url: ${SIGDEP_CENTRAL_API_URL:http://localhost:8080}
     batch-size: ${SIGDEP_BATCH_SIZE:500}
+    # Surcharges de taille de lot par entity_type (nom d'enum → taille), pour
+    # les entités aux payloads lourds. LAB_RESULTS agrège beaucoup d'obs par
+    # encounter : des lots plus petits réduisent la taille des requêtes et donc
+    # la sensibilité aux coupures de transport (cf. SYNC-12). Toute entité non
+    # listée retombe sur batch-size.
+    batch-size-overrides:
+      LAB_RESULTS: ${SIGDEP_BATCH_SIZE_LAB_RESULTS:100}
     sync-interval-minutes: ${SIGDEP_SYNC_INTERVAL_MINUTES:15}
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00

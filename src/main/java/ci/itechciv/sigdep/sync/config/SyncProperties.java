@@ -45,6 +45,12 @@ public record SyncProperties(
         LocalDateTime watermarkInitial,
         Map<String, String> identifierMapping,
 
+        // Surcharges de taille de lot par entity_type (nom d'enum → taille).
+        // Ex. LAB_RESULTS: 100 pour des lots plus petits (beaucoup d'obs par
+        // encounter → payloads lourds, plus sensibles aux coupures de
+        // transport). Absent ou entité non listée → batchSize global.
+        Map<String, Integer> batchSizeOverrides,
+
         // Clé API opaque (UUID) générée côté hub pour ce site, envoyée dans
         // l'en-tête X-API-Key (auth v2.0). Doit être renseignée et différente
         // de la valeur-gabarit 'changeme'.
@@ -85,6 +91,21 @@ public record SyncProperties(
     ) {}
 
     private static final String API_KEY_TEMPLATE = "changeme";
+
+    /**
+     * Taille de lot pour une entité : la surcharge {@code batchSizeOverrides}
+     * si elle existe pour cet {@code entityType}, sinon le {@code batchSize}
+     * global. Permet un lot plus petit pour LAB_RESULTS (payloads lourds).
+     */
+    public int batchSizeFor(ci.itechciv.sigdep.contracts.EntityType entityType) {
+        if (batchSizeOverrides != null) {
+            Integer override = batchSizeOverrides.get(entityType.name());
+            if (override != null && override > 0) {
+                return override;
+            }
+        }
+        return batchSize;
+    }
 
     /**
      * Base normalisée du hub (sans slash final), pré-calculée une fois pour

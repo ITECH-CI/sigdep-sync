@@ -114,7 +114,7 @@ public class OutboxFlusher {
      */
     public PagePushResult pushOnePage(EntityType entityType) {
         List<OutboxEntry> page = outbox.findRetryable(
-                entityType, props.batchSize(), props.maxRejectAttempts());
+                entityType, props.batchSizeFor(entityType), props.maxRejectAttempts());
         if (page.isEmpty()) {
             return new PagePushResult(true, false, 0, 0, 0);
         }

@@ -7,7 +7,25 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
-## [2.1.3] — non publié
+## [2.2.0] — non publié
+
+### Ajouté
+
+- **Résilience du push (SYNC-12)** : un échec de **transport** (coupure réseau,
+  timeout, HTTP 5xx/429, `stream was reset: CANCEL` sur HTTP/2) est désormais
+  distingué d'un rejet **applicatif** (400 : lot invalide). Sur un échec de
+  transport, le lot est **ré-essayé** avec backoff exponentiel borné + jitter
+  (`SIGDEP_HTTP_MAX_RETRIES`, défaut 5 ; délais `…_RETRY_INITIAL_DELAY_MS` /
+  `…_RETRY_MAX_DELAY_MS`) avant de mettre l'entité en pause. Auparavant, la
+  moindre coupure d'une seconde mettait l'entité en pause pour tout le cycle —
+  problème observé sur `LAB_RESULTS` (seule entité enchaînant beaucoup de
+  requêtes) quand nginx fermait la connexion HTTP/2 via `GOAWAY`. Un rejet
+  applicatif, lui, ne provoque **aucun** retry (comportement inchangé).
+- **Taille de lot paramétrable par type d'entité** (`batch-size-overrides`) :
+  les entités aux payloads lourds peuvent utiliser des lots plus petits sans
+  changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
+  (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
+  sensibilité aux coupures de transport.
 
 ### Corrigé
 
