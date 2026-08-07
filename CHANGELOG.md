@@ -7,7 +7,7 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
-## [2.2.0] — non publié
+## [2.2.0] — 2026-08-07
 
 ### Ajouté
 
