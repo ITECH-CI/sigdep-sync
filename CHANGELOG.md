@@ -26,6 +26,13 @@ adhère à [Semantic Versioning](https://semver.org/).
   changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
   (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
   sensibilité aux coupures de transport.
+- **Rapport de réconciliation (RECON-1)** (`--reconcile`) : commande one-shot
+  qui affiche, par `entity_type`, un ordre de grandeur des lignes en table
+  source OpenMRS, les compteurs d'outbox par statut (SENT / PENDING / REJECTED /
+  DEAD_LETTER) et le watermark courant — pour repérer une entité anormalement en
+  retard ou jamais synchronisée. Le compteur source est un `COUNT(*)` brut
+  (approximatif : sans les filtres d'extraction ni l'exclusion des `voided`).
+  Ne démarre pas de cycle (scheduler désactivé), s'arrête à la fin.
 - **Commande de remise en file des `DEAD_LETTER`** (`--requeue-dead-letter`) :
   remet en file les lignes bloquées (rejets de validation ayant épuisé leurs
   tentatives) une fois la cause corrigée côté hub — `status=PENDING`,
