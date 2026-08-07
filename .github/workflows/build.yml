@@ -48,8 +48,14 @@ jobs:
         working-directory: .sigdep-contracts
         run: mvn -B -DskipTests install
 
-      - name: Build sigdep-sync
-        run: mvn -B -DskipTests package
+      # `verify` (pas `package`) et SANS -DskipTests : lance les tests
+      # unitaires (surefire) PUIS les tests d'intégration *IT (failsafe, qui
+      # démarrent des conteneurs MySQL via testcontainers). Docker est
+      # préinstallé sur ubuntu-latest, donc testcontainers fonctionne sans
+      # service supplémentaire. Auparavant `-DskipTests package` ne validait
+      # RIEN d'autre que l'assemblage du jar — les tests ne tournaient pas.
+      - name: Build & test sigdep-sync (unit + integration)
+        run: mvn -B verify
 
       - name: Verify the fat jar runs (smoke)
         run: |

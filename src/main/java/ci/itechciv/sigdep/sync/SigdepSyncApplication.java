@@ -15,7 +15,28 @@ import org.springframework.validation.Validator;
 public class SigdepSyncApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(SigdepSyncApplication.class, args);
+        // Commandes one-shot (--requeue-dead-letter, --reconcile) : on désactive
+        // le scheduler AVANT de démarrer le contexte, pour qu'aucun cycle
+        // @Scheduled ne parte pendant que le runner correspondant fait son
+        // travail puis arrête l'agent. La property est lue par le
+        // @ConditionalOnProperty de SyncScheduler (le bean n'est pas créé).
+        SpringApplication app = new SpringApplication(SigdepSyncApplication.class);
+        if (hasOneShotCommand(args)) {
+            app.setDefaultProperties(java.util.Map.of("sigdep.sync.scheduler.enabled", "false"));
+        }
+        app.run(args);
+    }
+
+    /** Vrai si les arguments contiennent une commande one-shot (scheduler à désactiver). */
+    private static boolean hasOneShotCommand(String[] args) {
+        for (String a : args) {
+            for (String opt : new String[] {"--requeue-dead-letter", "--reconcile"}) {
+                if (a.equals(opt) || a.startsWith(opt + "=")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

@@ -7,10 +7,62 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
-## [2.1.3] — non publié
+## [2.2.0] — non publié
+
+### Ajouté
+
+- **Résilience du push (SYNC-12)** : un échec de **transport** (coupure réseau,
+  timeout, HTTP 5xx/429, `stream was reset: CANCEL` sur HTTP/2) est désormais
+  distingué d'un rejet **applicatif** (400 : lot invalide). Sur un échec de
+  transport, le lot est **ré-essayé** avec backoff exponentiel borné + jitter
+  (`SIGDEP_HTTP_MAX_RETRIES`, défaut 5 ; délais `…_RETRY_INITIAL_DELAY_MS` /
+  `…_RETRY_MAX_DELAY_MS`) avant de mettre l'entité en pause. Auparavant, la
+  moindre coupure d'une seconde mettait l'entité en pause pour tout le cycle —
+  problème observé sur `LAB_RESULTS` (seule entité enchaînant beaucoup de
+  requêtes) quand nginx fermait la connexion HTTP/2 via `GOAWAY`. Un rejet
+  applicatif, lui, ne provoque **aucun** retry (comportement inchangé).
+- **Taille de lot paramétrable par type d'entité** (`batch-size-overrides`) :
+  les entités aux payloads lourds peuvent utiliser des lots plus petits sans
+  changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
+  (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
+  sensibilité aux coupures de transport.
+- **Rapport de réconciliation (RECON-1)** (`--reconcile`) : commande one-shot
+  qui affiche, par `entity_type`, un ordre de grandeur des lignes en table
+  source OpenMRS, les compteurs d'outbox par statut (SENT / PENDING / REJECTED /
+  DEAD_LETTER) et le watermark courant — pour repérer une entité anormalement en
+  retard ou jamais synchronisée. Le compteur source est un `COUNT(*)` brut
+  (approximatif : sans les filtres d'extraction ni l'exclusion des `voided`).
+  Ne démarre pas de cycle (scheduler désactivé), s'arrête à la fin.
+- **Commande de remise en file des `DEAD_LETTER`** (`--requeue-dead-letter`) :
+  remet en file les lignes bloquées (rejets de validation ayant épuisé leurs
+  tentatives) une fois la cause corrigée côté hub — `status=PENDING`,
+  `attempts=0`, `last_error` conservé. Optionnellement ciblée par entité
+  (`--requeue-dead-letter=LAB_RESULTS`). La commande requeue puis arrête l'agent
+  sans démarrer de cycle (scheduler désactivé pour ce lancement), et passe par
+  le verrou d'écriture du buffer. Remplace le `UPDATE outbox` lancé à la main
+  via un conteneur `alpine + sqlite3`.
+- **Visibilité des identifiants exclus faute de mapping (SYNC-11)** : un type
+  `patient_identifier_type` OpenMRS absent de `identifier-mapping` était
+  jusqu'ici **exclu de la synchro en silence** — un site nommant son type ARV
+  autrement que les clés configurées voyait tous ses codes ARV disparaître sans
+  trace. L'agent loggue désormais un WARN la première fois qu'un type non mappé
+  est rencontré (dédupliqué pour ne pas spammer le journal), nommant le type et
+  le nombre d'identifiants concernés, avec la clé de config à ajouter.
 
 ### Corrigé
 
+- **Suppressions logiques (void) invisibles côté hub (SYNC-10)** : la borne de
+  pagination des extracteurs ne tenait compte que de
+  `COALESCE(date_changed, date_created)`. Or, sur OpenMRS, voider une ligne
+  renseigne `date_voided` mais ne met pas toujours à jour `date_changed` : la
+  suppression ne faisait donc pas avancer le watermark, la ligne voidée n'était
+  jamais renvoyée et le hub conservait une **donnée fantôme** (encore comptée
+  dans les analyses Superset). Tous les extracteurs bornent désormais sur
+  `GREATEST(COALESCE(date_changed, date_created), COALESCE(date_voided, date_created))`
+  (idem pour les entités composées patient/personne et PTME mère/enfant), de
+  sorte qu'un void récent repasse dans la fenêtre et propage `voided=true`.
+  Couvert par `EncounterVoidedWatermarkIT` (MySQL testcontainers) : capture du
+  void + contre-épreuve que l'ancienne borne le ratait.
 - **`SQLITE_BUSY` (« database is locked ») sous charge** : régression introduite
   par le pipeline découplé de la 2.1.2. Le producteur (`enqueueBatch`) et le
   consommateur (`markSent`/`markRejected`/`updateWatermark`) écrivaient en
@@ -20,6 +72,16 @@ adhère à [Semantic Versioning](https://semver.org/).
   buffer sont désormais **sérialisées** par un verrou applicatif
   (`BufferWriteLock`), ce qui élimine la contention à la racine. `busy_timeout`
   porté à 5 s en complément.
+
+### Interne
+
+- **Tests d'intégration exécutés en CI** : les tests `*IT` (testcontainers
+  MySQL) n'étaient lancés NI par `mvn test` NI par la CI — surefire ne matche
+  que `*Test`, la CI faisait `mvn -DskipTests package`, et aucun failsafe
+  n'était configuré. Ils existaient sans jamais tourner. Ajout du plugin
+  failsafe (phase `verify`) et bascule de la CI `build.yml` vers `mvn verify`
+  (sans `-DskipTests`). `mvn test` reste unitaire pur (rapide, sans Docker) ;
+  `mvn verify` ajoute les IT.
 
 ## [2.1.2] — non publié
 

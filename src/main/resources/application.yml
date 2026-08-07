@@ -7,6 +7,13 @@ sigdep:
     site-code: ${SIGDEP_SITE_CODE:UNKNOWN}
     central-api-url: ${SIGDEP_CENTRAL_API_URL:http://localhost:8080}
     batch-size: ${SIGDEP_BATCH_SIZE:500}
+    # Surcharges de taille de lot par entity_type (nom d'enum → taille), pour
+    # les entités aux payloads lourds. LAB_RESULTS agrège beaucoup d'obs par
+    # encounter : des lots plus petits réduisent la taille des requêtes et donc
+    # la sensibilité aux coupures de transport (cf. SYNC-12). Toute entité non
+    # listée retombe sur batch-size.
+    batch-size-overrides:
+      LAB_RESULTS: ${SIGDEP_BATCH_SIZE_LAB_RESULTS:100}
     sync-interval-minutes: ${SIGDEP_SYNC_INTERVAL_MINUTES:15}
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00
@@ -23,6 +30,13 @@ sigdep:
       connect-timeout-seconds: ${SIGDEP_HTTP_CONNECT_TIMEOUT_SECONDS:10}
       read-timeout-seconds: ${SIGDEP_HTTP_READ_TIMEOUT_SECONDS:60}
       write-timeout-seconds: ${SIGDEP_HTTP_WRITE_TIMEOUT_SECONDS:60}
+      # Résilience du push : retry backoff+jitter sur un échec de TRANSPORT
+      # (réseau, 5xx, 429) avant de mettre l'entité en pause. Évite qu'une
+      # coupure d'une seconde coûte un cycle entier (défaut historique = pause
+      # immédiate, soit maxRetries=0).
+      max-retries: ${SIGDEP_HTTP_MAX_RETRIES:5}
+      retry-initial-delay-ms: ${SIGDEP_HTTP_RETRY_INITIAL_DELAY_MS:500}
+      retry-max-delay-ms: ${SIGDEP_HTTP_RETRY_MAX_DELAY_MS:30000}
     # Clé API du site (auth v2.0). Générée dans la console hub
     # (Sites → « Gérer » → Générer une clé), copiée ici une seule fois.
     api-key: ${SIGDEP_API_KEY:}

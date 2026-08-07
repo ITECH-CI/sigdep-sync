@@ -75,11 +75,11 @@ class EntityPipelineTest {
     private static SyncProperties props() {
         return new SyncProperties(
                 "SITE", "https://hub.example.org", BATCH, 15, EPOCH,
-                java.util.Map.of(), "api-key-1234",
+                java.util.Map.of(), java.util.Map.of(), "api-key-1234",
                 "jdbc:mysql://localhost/openmrs",
                 new SyncProperties.Backfill(false, 30, "0 0 22 * * MON-FRI"),
                 3, 2,
-                new SyncProperties.Http(10, 60, 60));
+                new SyncProperties.Http(10, 60, 60, 0, 500L, 30000L));
     }
 
     /** Extracteur factice : produit `pageCount` pages pleines puis une vide. */

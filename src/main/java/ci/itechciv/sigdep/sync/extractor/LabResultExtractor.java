@@ -61,13 +61,13 @@ public class LabResultExtractor implements DataExtractor {
                        e.uuid                AS encounter_uuid,
                        per.uuid              AS patient_uuid,
                        e.encounter_datetime  AS encounter_datetime,
-                       COALESCE(e.date_changed, e.date_created) AS effective_changed
+                       GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) AS effective_changed
                 FROM encounter e
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid = ?
-                  AND (COALESCE(e.date_changed, e.date_created) > ?
-                       OR (COALESCE(e.date_changed, e.date_created) = ? AND e.encounter_id > ?))
+                  AND (GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) > ?
+                       OR (GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) = ? AND e.encounter_id > ?))
                 ORDER BY effective_changed, e.encounter_id
                 LIMIT ?
                 """,

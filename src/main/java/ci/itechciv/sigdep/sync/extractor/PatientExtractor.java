@@ -22,10 +22,12 @@ import org.springframework.stereotype.Component;
  * Extracts modified patients from a local OpenMRS MySQL database and turns
  * them into canonical PatientDto records ready to be queued in the outbox.
  *
- * Watermark column: GREATEST(person.date_changed, patient.date_changed) so we
- * pick up changes coming from either side. The reference OpenMRS schema is
- * used here; site-specific tweaks (custom person_attribute_type UUIDs, etc.)
- * are wired through configuration.
+ * Watermark column: GREATEST over person/patient date_changed ET date_voided
+ * (chacun retombant sur date_created via COALESCE) — on capte ainsi les
+ * modifications ET les suppressions logiques (void), qui autrement ne feraient
+ * pas avancer le watermark et resteraient invisibles côté hub (SYNC-10). The
+ * reference OpenMRS schema is used here; site-specific tweaks (custom
+ * person_attribute_type UUIDs, etc.) are wired through configuration.
  */
 /**
  * Order matters: patients are the FK target for every other entity, so they
@@ -40,6 +42,13 @@ public class PatientExtractor implements DataExtractor {
 
     private final JdbcTemplate localDb;
     private final SyncProperties props;
+
+    // Types d'identifiant non mappés déjà signalés (WARN), pour ne pas répéter
+    // l'alerte à chaque page/cycle : on ne réalerte que sur un type NOUVEAU.
+    // ConcurrentHashMap.newKeySet : l'extraction peut tourner sur des threads
+    // distincts d'un cycle à l'autre.
+    private final java.util.Set<String> reportedUnmappedTypes =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public PatientExtractor(@Qualifier("localJdbcTemplate") JdbcTemplate localDb,
                             SyncProperties props) {
@@ -70,17 +79,23 @@ public class PatientExtractor implements DataExtractor {
                   pat.voided                       AS patient_voided,
                   GREATEST(
                     COALESCE(per.date_changed, per.date_created),
-                    COALESCE(pat.date_changed, pat.date_created)
+                    COALESCE(pat.date_changed, pat.date_created),
+                    COALESCE(per.date_voided, per.date_created),
+                    COALESCE(pat.date_voided, pat.date_created)
                   )                                AS effective_changed
                 FROM patient pat
                 JOIN person  per ON per.person_id = pat.patient_id
                 WHERE GREATEST(
                         COALESCE(per.date_changed, per.date_created),
-                        COALESCE(pat.date_changed, pat.date_created)
+                        COALESCE(pat.date_changed, pat.date_created),
+                        COALESCE(per.date_voided, per.date_created),
+                        COALESCE(pat.date_voided, pat.date_created)
                       ) > ?
                    OR (GREATEST(
                         COALESCE(per.date_changed, per.date_created),
-                        COALESCE(pat.date_changed, pat.date_created)
+                        COALESCE(pat.date_changed, pat.date_created),
+                        COALESCE(per.date_voided, per.date_created),
+                        COALESCE(pat.date_voided, pat.date_created)
                       ) = ? AND per.person_id > ?)
                 ORDER BY effective_changed, per.person_id
                 LIMIT ?
@@ -178,6 +193,11 @@ public class PatientExtractor implements DataExtractor {
         Object[] uuids = rows.stream().map(r -> r.uuid.toString()).toArray();
 
         Map<UUID, List<IdentifierDto>> out = new HashMap<>();
+        // Types d'identifiant rencontrés mais absents du mapping, avec le
+        // nombre de lignes concernées sur CETTE page. Un type non mappé est
+        // exclu du push (le code cible est inconnu) ; on le remonte pour que
+        // l'exclusion ne soit pas silencieuse (SYNC-11).
+        Map<String, Integer> unmappedThisPage = new HashMap<>();
         localDb.query(
                 """
                 SELECT per.uuid                    AS patient_uuid,
@@ -192,7 +212,10 @@ public class PatientExtractor implements DataExtractor {
                 rs -> {
                     String typeName = rs.getString("type_name");
                     String mappedCode = mapping.get(typeName);
-                    if (mappedCode == null) return;
+                    if (mappedCode == null) {
+                        unmappedThisPage.merge(typeName, 1, Integer::sum);
+                        return;
+                    }
                     UUID u = UUID.fromString(rs.getString("patient_uuid"));
                     out.computeIfAbsent(u, k -> new ArrayList<>()).add(new IdentifierDto(
                             mappedCode,
@@ -202,7 +225,29 @@ public class PatientExtractor implements DataExtractor {
                             null));
                 },
                 uuids);
+        reportUnmappedIdentifierTypes(unmappedThisPage);
         return out;
+    }
+
+    /**
+     * Rend visibles les types d'identifiant exclus faute de mapping (SYNC-11).
+     * Sans cela, un site nommant son type ARV autrement que les clés de
+     * {@code identifier-mapping} verrait TOUS ses codes ARV disparaître en
+     * silence. On loggue un WARN la PREMIÈRE fois qu'un type non mappé apparaît
+     * (dédup via {@link #reportedUnmappedTypes}), avec le nombre de lignes
+     * concernées sur la page — assez pour diagnostiquer sans spammer le journal.
+     */
+    private void reportUnmappedIdentifierTypes(Map<String, Integer> unmappedThisPage) {
+        for (Map.Entry<String, Integer> e : unmappedThisPage.entrySet()) {
+            if (reportedUnmappedTypes.add(e.getKey())) {
+                log.warn("Type d'identifiant OpenMRS \"{}\" absent de identifier-mapping : "
+                        + "{} identifiant(s) exclus de la synchro sur cette page (et les "
+                        + "suivantes tant que le mapping n'est pas complété). Ajouter une "
+                        + "entrée sigdep.sync.identifier-mapping[\"{}\"] = <code cible> si "
+                        + "ces identifiants doivent remonter.",
+                        e.getKey(), e.getValue(), e.getKey());
+            }
+        }
     }
 
     private static String normalizeSex(String openmrsGender) {

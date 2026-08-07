@@ -66,7 +66,9 @@ public class PtmeMotherExtractor implements DataExtractor {
                        f.delivery_type,
                        GREATEST(
                          COALESCE(p.date_changed, p.date_created),
-                         COALESCE(f.date_changed, f.date_created, p.date_created)
+                         COALESCE(f.date_changed, f.date_created, p.date_created),
+                         COALESCE(p.date_voided, p.date_created),
+                         COALESCE(f.date_voided, f.date_created, p.date_created)
                        ) AS effective_changed
                 FROM ptme_pregnant_patient p
                 LEFT JOIN ptme_mother_followup f
@@ -74,11 +76,15 @@ public class PtmeMotherExtractor implements DataExtractor {
                       AND f.voided = 0
                 WHERE GREATEST(
                         COALESCE(p.date_changed, p.date_created),
-                        COALESCE(f.date_changed, f.date_created, p.date_created)
+                        COALESCE(f.date_changed, f.date_created, p.date_created),
+                        COALESCE(p.date_voided, p.date_created),
+                        COALESCE(f.date_voided, f.date_created, p.date_created)
                       ) > ?
                    OR (GREATEST(
                         COALESCE(p.date_changed, p.date_created),
-                        COALESCE(f.date_changed, f.date_created, p.date_created)
+                        COALESCE(f.date_changed, f.date_created, p.date_created),
+                        COALESCE(p.date_voided, p.date_created),
+                        COALESCE(f.date_voided, f.date_created, p.date_created)
                       ) = ? AND p.pregnant_patient_id > ?)
                 ORDER BY effective_changed, p.pregnant_patient_id
                 LIMIT ?

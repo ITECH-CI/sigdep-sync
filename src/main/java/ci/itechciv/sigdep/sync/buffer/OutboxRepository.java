@@ -281,6 +281,43 @@ public class OutboxRepository {
         });
     }
 
+    /**
+     * Remet en file les lignes 'DEAD_LETTER' pour un nouveau cycle de push :
+     * status → 'PENDING' et compteur {@code attempts} remis à zéro (le plafond
+     * de tentatives doit repartir de zéro, sinon la ligne rebasculerait en
+     * DEAD_LETTER au premier rejet). {@code last_error} est CONSERVÉ comme
+     * trace du dernier échec. Opération manuelle (via la commande
+     * {@code --requeue-dead-letter}) : à lancer une fois la cause corrigée
+     * côté hub (schéma, mapping, migration…).
+     *
+     * @param entityType entité ciblée, ou {@code null} pour TOUTES les entités.
+     * @return nombre de lignes remises en file.
+     */
+    public int requeueDeadLetter(EntityType entityType) {
+        return writeLock.callExclusively(() -> {
+            if (entityType == null) {
+                return jdbc.update(
+                        "UPDATE outbox SET status='PENDING', attempts=0 "
+                                + "WHERE status='DEAD_LETTER'");
+            }
+            return jdbc.update(
+                    "UPDATE outbox SET status='PENDING', attempts=0 "
+                            + "WHERE status='DEAD_LETTER' AND entity_type=?",
+                    entityType.name());
+        });
+    }
+
+    /** Nombre de lignes en DEAD_LETTER (toutes entités, ou une seule). */
+    public int deadLetterCount(EntityType entityType) {
+        Integer n = entityType == null
+                ? jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM outbox WHERE status='DEAD_LETTER'", Integer.class)
+                : jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM outbox WHERE status='DEAD_LETTER' AND entity_type=?",
+                        Integer.class, entityType.name());
+        return n == null ? 0 : n;
+    }
+
     /** Counters for the per-cycle log line. */
     public DeadLetterStats deadLetterStats(EntityType entityType) {
         return jdbc.queryForObject(
@@ -310,6 +347,38 @@ public class OutboxRepository {
                 Integer.class,
                 entityType.name());
         return n == null ? 0 : n;
+    }
+
+    /**
+     * Compteurs outbox par (entity_type, status) en un seul balayage, pour le
+     * rapport de réconciliation ({@code --reconcile}). Clé = nom d'entité ;
+     * chaque {@link OutboxCounts} porte le détail par statut. Une entité sans
+     * aucune ligne en outbox n'apparaît PAS dans la map (au rapport d'ajouter
+     * une ligne à zéro à partir de la liste des extracteurs).
+     */
+    public java.util.Map<String, OutboxCounts> outboxCountsByEntity() {
+        java.util.Map<String, OutboxCounts> out = new java.util.HashMap<>();
+        jdbc.query(
+                """
+                SELECT entity_type,
+                       SUM(CASE WHEN status='SENT'        THEN 1 ELSE 0 END) AS sent,
+                       SUM(CASE WHEN status='PENDING'     THEN 1 ELSE 0 END) AS pending,
+                       SUM(CASE WHEN status='REJECTED'    THEN 1 ELSE 0 END) AS rejected,
+                       SUM(CASE WHEN status='DEAD_LETTER' THEN 1 ELSE 0 END) AS dead
+                FROM outbox
+                GROUP BY entity_type
+                """,
+                (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+                        out.put(rs.getString("entity_type"), new OutboxCounts(
+                                rs.getLong("sent"), rs.getLong("pending"),
+                                rs.getLong("rejected"), rs.getLong("dead"))));
+        return out;
+    }
+
+    public record OutboxCounts(long sent, long pending, long rejected, long dead) {
+        public long total() {
+            return sent + pending + rejected + dead;
+        }
     }
 
     public record RejectedId(long id, String errorMessage) {}

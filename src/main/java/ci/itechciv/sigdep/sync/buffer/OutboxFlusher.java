@@ -8,6 +8,7 @@ import ci.itechciv.sigdep.sync.buffer.OutboxRepository.OutboxEntry;
 import ci.itechciv.sigdep.sync.buffer.OutboxRepository.RejectedId;
 import ci.itechciv.sigdep.sync.config.SyncProperties;
 import ci.itechciv.sigdep.sync.pusher.CentralApiClient;
+import ci.itechciv.sigdep.sync.pusher.RetryableTransportException;
 import ci.itechciv.sigdep.sync.state.SyncStateRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -113,7 +114,7 @@ public class OutboxFlusher {
      */
     public PagePushResult pushOnePage(EntityType entityType) {
         List<OutboxEntry> page = outbox.findRetryable(
-                entityType, props.batchSize(), props.maxRejectAttempts());
+                entityType, props.batchSizeFor(entityType), props.maxRejectAttempts());
         if (page.isEmpty()) {
             return new PagePushResult(true, false, 0, 0, 0);
         }
@@ -160,7 +161,7 @@ public class OutboxFlusher {
                 entityType,
                 records);
 
-        SyncBatchResponse resp = api.push(entityType, batch);
+        SyncBatchResponse resp = pushWithRetry(entityType, batch);
         log.info("ACK {} entityType={} accepted={} rejected={}",
                 resp.batchId(), entityType, resp.accepted(), resp.rejected());
 
@@ -236,6 +237,57 @@ public class OutboxFlusher {
         }
         return new PushResult(resp.accepted(), resp.rejected(),
                 dependencyRows.size(), validationRows.size());
+    }
+
+    /**
+     * Pousse un batch au hub en ré-essayant sur un échec de TRANSPORT
+     * ({@link RetryableTransportException} : réseau, 5xx, 429), avec backoff
+     * exponentiel borné + jitter. Un rejet APPLICATIF ({@link IOException}
+     * simple) est propagé immédiatement (retry inutile). Après épuisement des
+     * tentatives, l'exception de transport est propagée → l'appelant met
+     * l'entité en pause (comme avant), mais seulement en dernier recours.
+     *
+     * Corrige SYNC-12 : une coupure de transport transitoire (reset de flux
+     * HTTP/2 après {@code keepalive_requests}) coûtait un cycle entier ; elle
+     * est désormais absorbée par quelques retries de quelques secondes.
+     */
+    private SyncBatchResponse pushWithRetry(EntityType entityType, SyncBatchRequest<Object> batch)
+            throws IOException {
+        int maxRetries = props.http().maxRetries();
+        long delay = props.http().retryInitialDelayMs();
+        long maxDelay = props.http().retryMaxDelayMs();
+        int attempt = 0;
+        while (true) {
+            try {
+                return api.push(entityType, batch);
+            } catch (RetryableTransportException e) {
+                attempt++;
+                if (attempt > maxRetries) {
+                    log.warn("Push {} : échec de transport après {} tentative(s), mise en pause : {}",
+                            entityType, maxRetries, e.getMessage());
+                    throw e;
+                }
+                long sleep = jitter(Math.min(delay, maxDelay));
+                log.info("Push {} : échec de transport (tentative {}/{}), retry dans {} ms : {}",
+                        entityType, attempt, maxRetries, sleep, e.getMessage());
+                sleepQuietly(sleep);
+                delay = Math.min(delay * 2, maxDelay); // backoff exponentiel borné
+            }
+        }
+    }
+
+    /** Ajoute un jitter [50%, 100%] au délai pour désynchroniser les retries. */
+    private static long jitter(long delayMs) {
+        long half = delayMs / 2;
+        return half + (long) (Math.random() * half);
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private record PushResult(int accepted, int rejected,

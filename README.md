@@ -328,6 +328,62 @@ sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
    FROM outbox WHERE status='DEAD_LETTER' ORDER BY id LIMIT 20;"
 ```
 
+### Rapport de réconciliation
+
+Pour repérer d'un coup d'œil une entité anormalement en retard ou jamais
+synchronisée, la commande `--reconcile` affiche, par `entity_type` : un
+ordre de grandeur des lignes en table source OpenMRS, les compteurs d'outbox
+par statut (SENT / PENDING / REJECTED / DEAD_LETTER) et le watermark courant.
+
+```bash
+# systemd (l'agent peut rester en marche : lecture seule côté source)
+java -jar /opt/sigdep-sync/sigdep-sync.jar --reconcile
+
+# Docker (conteneur jetable, même volume + accès à la base source via .env)
+docker run --rm --env-file /opt/sigdep-sync/.env \
+  -v sigdep-sync_sigdep-buffer:/var/lib/sigdep-agent \
+  "$SIGDEP_SYNC_IMAGE" --reconcile
+```
+
+> ⚠️ Le compteur **SOURCE est approximatif** : c'est un `COUNT(*)` brut de la
+> table (`getSourceTable()`), sans les filtres propres à chaque extracteur
+> (type d'encounter, jointures PTME…) et **sans exclure les lignes `voided`**.
+> Il sert à détecter un écart grossier (entité à zéro alors qu'elle devrait
+> être peuplée, SENT très en dessous de la source), pas à un rapprochement
+> ligne à ligne. La commande ne démarre pas de cycle et s'arrête à la fin.
+
+### Débloquer des lignes `DEAD_LETTER`
+
+Une ligne passe en `DEAD_LETTER` après avoir épuisé ses tentatives sur un
+rejet de **validation** (données refusées par le hub — schéma trop court,
+contrainte, mapping manquant…). Elle sort alors du flux de retry automatique
+et attend une action manuelle. Une fois la **cause corrigée côté hub**
+(migration, colonne élargie, mapping ajouté…), remettre ces lignes en file
+avec la commande intégrée — elle repart `status=PENDING`, `attempts=0`,
+`last_error` conservé comme trace :
+
+```bash
+# systemd : arrêter l'agent, requeue, redémarrer
+systemctl stop sigdep-sync
+# toutes les entités
+java -jar /opt/sigdep-sync/sigdep-sync.jar --requeue-dead-letter
+# …ou une seule entité
+java -jar /opt/sigdep-sync/sigdep-sync.jar --requeue-dead-letter=LAB_RESULTS
+systemctl start sigdep-sync
+
+# Docker : one-shot dans un conteneur jetable montant le même volume
+docker run --rm --env-file /opt/sigdep-sync/.env \
+  -v sigdep-sync_sigdep-buffer:/var/lib/sigdep-agent \
+  "$SIGDEP_SYNC_IMAGE" --requeue-dead-letter=LAB_RESULTS
+```
+
+La commande **ne démarre pas** de cycle de synchronisation : elle requeue,
+journalise le nombre de lignes traitées, puis s'arrête (le scheduler est
+désactivé pour ce lancement, donc aucun cycle ne part en concurrence). Elle
+passe par le même verrou d'écriture que l'agent : sûre même si le fichier de
+tampon est partagé. Elle remplace l'ancien `UPDATE outbox SET status='PENDING'`
+lancé à la main via un conteneur `alpine + sqlite3`.
+
 ### Forcer une resynchronisation complète
 
 Arrêter l'agent, supprimer le fichier de tampon, redémarrer. L'agent
