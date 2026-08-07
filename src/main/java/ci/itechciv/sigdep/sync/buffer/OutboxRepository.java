@@ -281,6 +281,43 @@ public class OutboxRepository {
         });
     }
 
+    /**
+     * Remet en file les lignes 'DEAD_LETTER' pour un nouveau cycle de push :
+     * status → 'PENDING' et compteur {@code attempts} remis à zéro (le plafond
+     * de tentatives doit repartir de zéro, sinon la ligne rebasculerait en
+     * DEAD_LETTER au premier rejet). {@code last_error} est CONSERVÉ comme
+     * trace du dernier échec. Opération manuelle (via la commande
+     * {@code --requeue-dead-letter}) : à lancer une fois la cause corrigée
+     * côté hub (schéma, mapping, migration…).
+     *
+     * @param entityType entité ciblée, ou {@code null} pour TOUTES les entités.
+     * @return nombre de lignes remises en file.
+     */
+    public int requeueDeadLetter(EntityType entityType) {
+        return writeLock.callExclusively(() -> {
+            if (entityType == null) {
+                return jdbc.update(
+                        "UPDATE outbox SET status='PENDING', attempts=0 "
+                                + "WHERE status='DEAD_LETTER'");
+            }
+            return jdbc.update(
+                    "UPDATE outbox SET status='PENDING', attempts=0 "
+                            + "WHERE status='DEAD_LETTER' AND entity_type=?",
+                    entityType.name());
+        });
+    }
+
+    /** Nombre de lignes en DEAD_LETTER (toutes entités, ou une seule). */
+    public int deadLetterCount(EntityType entityType) {
+        Integer n = entityType == null
+                ? jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM outbox WHERE status='DEAD_LETTER'", Integer.class)
+                : jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM outbox WHERE status='DEAD_LETTER' AND entity_type=?",
+                        Integer.class, entityType.name());
+        return n == null ? 0 : n;
+    }
+
     /** Counters for the per-cycle log line. */
     public DeadLetterStats deadLetterStats(EntityType entityType) {
         return jdbc.queryForObject(

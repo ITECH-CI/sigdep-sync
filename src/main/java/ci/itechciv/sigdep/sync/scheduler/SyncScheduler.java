@@ -20,6 +20,13 @@ import org.springframework.stereotype.Component;
 
 @Component
 @DependsOn("bufferSchemaInitializer")
+// Désactivé (bean non créé) par la commande one-shot --requeue-dead-letter, qui
+// pose sigdep.sync.scheduler.enabled=false : on remet les DEAD_LETTER en file
+// puis on arrête l'agent SANS qu'un cycle @Scheduled ne parte en concurrence.
+// En fonctionnement normal la property est absente → matchIfMissing garde le
+// scheduler actif.
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        name = "sigdep.sync.scheduler.enabled", havingValue = "true", matchIfMissing = true)
 public class SyncScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(SyncScheduler.class);

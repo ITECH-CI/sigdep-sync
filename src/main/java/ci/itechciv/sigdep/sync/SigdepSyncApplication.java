@@ -15,7 +15,26 @@ import org.springframework.validation.Validator;
 public class SigdepSyncApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(SigdepSyncApplication.class, args);
+        // Commande one-shot --requeue-dead-letter : on désactive le scheduler
+        // AVANT de démarrer le contexte, pour qu'aucun cycle @Scheduled ne parte
+        // pendant que DeadLetterRequeueRunner remet les lignes en file puis
+        // arrête l'agent. La property est lue par le @ConditionalOnProperty de
+        // SyncScheduler (le bean n'est alors pas créé du tout).
+        SpringApplication app = new SpringApplication(SigdepSyncApplication.class);
+        if (hasRequeueOption(args)) {
+            app.setDefaultProperties(java.util.Map.of("sigdep.sync.scheduler.enabled", "false"));
+        }
+        app.run(args);
+    }
+
+    /** Vrai si les arguments contiennent {@code --requeue-dead-letter[=...]}. */
+    private static boolean hasRequeueOption(String[] args) {
+        for (String a : args) {
+            if (a.equals("--requeue-dead-letter") || a.startsWith("--requeue-dead-letter=")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

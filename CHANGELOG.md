@@ -26,6 +26,14 @@ adhère à [Semantic Versioning](https://semver.org/).
   changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
   (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
   sensibilité aux coupures de transport.
+- **Commande de remise en file des `DEAD_LETTER`** (`--requeue-dead-letter`) :
+  remet en file les lignes bloquées (rejets de validation ayant épuisé leurs
+  tentatives) une fois la cause corrigée côté hub — `status=PENDING`,
+  `attempts=0`, `last_error` conservé. Optionnellement ciblée par entité
+  (`--requeue-dead-letter=LAB_RESULTS`). La commande requeue puis arrête l'agent
+  sans démarrer de cycle (scheduler désactivé pour ce lancement), et passe par
+  le verrou d'écriture du buffer. Remplace le `UPDATE outbox` lancé à la main
+  via un conteneur `alpine + sqlite3`.
 - **Visibilité des identifiants exclus faute de mapping (SYNC-11)** : un type
   `patient_identifier_type` OpenMRS absent de `identifier-mapping` était
   jusqu'ici **exclu de la synchro en silence** — un site nommant son type ARV
