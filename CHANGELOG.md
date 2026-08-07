@@ -26,6 +26,13 @@ adhère à [Semantic Versioning](https://semver.org/).
   changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
   (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
   sensibilité aux coupures de transport.
+- **Visibilité des identifiants exclus faute de mapping (SYNC-11)** : un type
+  `patient_identifier_type` OpenMRS absent de `identifier-mapping` était
+  jusqu'ici **exclu de la synchro en silence** — un site nommant son type ARV
+  autrement que les clés configurées voyait tous ses codes ARV disparaître sans
+  trace. L'agent loggue désormais un WARN la première fois qu'un type non mappé
+  est rencontré (dédupliqué pour ne pas spammer le journal), nommant le type et
+  le nombre d'identifiants concernés, avec la clé de config à ajouter.
 
 ### Corrigé
 
