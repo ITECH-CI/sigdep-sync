@@ -149,6 +149,28 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Tests d'intégration (*IT) : exécutés par failsafe en phase
+                 `verify`, PAS par surefire en phase `test`. `mvn test` reste
+                 donc purement unitaire (rapide, sans Docker) ; `mvn verify`
+                 lance en plus les *IT, qui démarrent des conteneurs MySQL via
+                 testcontainers (Docker requis — présent en CI). Sans ce plugin,
+                 les *IT n'étaient JAMAIS exécutés (surefire ne matche que
+                 *Test/Test*/*Tests) : ils existaient sans jamais tourner.
+                 Le pattern par défaut de failsafe (*IT, IT*, *ITCase) couvre
+                 nos fichiers, d'où l'absence de <includes>. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- Résout ${revision} dans le POM installé/packagé (pattern
                  officiel d'une version pilotée par -Drevision). Sans ça,
                  ${revision} fuite littéralement dans les artefacts. -->

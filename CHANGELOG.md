@@ -58,6 +58,16 @@ adhère à [Semantic Versioning](https://semver.org/).
   (`BufferWriteLock`), ce qui élimine la contention à la racine. `busy_timeout`
   porté à 5 s en complément.
 
+### Interne
+
+- **Tests d'intégration exécutés en CI** : les tests `*IT` (testcontainers
+  MySQL) n'étaient lancés NI par `mvn test` NI par la CI — surefire ne matche
+  que `*Test`, la CI faisait `mvn -DskipTests package`, et aucun failsafe
+  n'était configuré. Ils existaient sans jamais tourner. Ajout du plugin
+  failsafe (phase `verify`) et bascule de la CI `build.yml` vers `mvn verify`
+  (sans `-DskipTests`). `mvn test` reste unitaire pur (rapide, sans Docker) ;
+  `mvn verify` ajoute les IT.
+
 ## [2.1.2] — non publié
 
 ### Ajouté
