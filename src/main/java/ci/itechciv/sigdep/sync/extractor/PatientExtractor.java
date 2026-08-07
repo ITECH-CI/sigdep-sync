@@ -22,10 +22,12 @@ import org.springframework.stereotype.Component;
  * Extracts modified patients from a local OpenMRS MySQL database and turns
  * them into canonical PatientDto records ready to be queued in the outbox.
  *
- * Watermark column: GREATEST(person.date_changed, patient.date_changed) so we
- * pick up changes coming from either side. The reference OpenMRS schema is
- * used here; site-specific tweaks (custom person_attribute_type UUIDs, etc.)
- * are wired through configuration.
+ * Watermark column: GREATEST over person/patient date_changed ET date_voided
+ * (chacun retombant sur date_created via COALESCE) — on capte ainsi les
+ * modifications ET les suppressions logiques (void), qui autrement ne feraient
+ * pas avancer le watermark et resteraient invisibles côté hub (SYNC-10). The
+ * reference OpenMRS schema is used here; site-specific tweaks (custom
+ * person_attribute_type UUIDs, etc.) are wired through configuration.
  */
 /**
  * Order matters: patients are the FK target for every other entity, so they
@@ -77,17 +79,23 @@ public class PatientExtractor implements DataExtractor {
                   pat.voided                       AS patient_voided,
                   GREATEST(
                     COALESCE(per.date_changed, per.date_created),
-                    COALESCE(pat.date_changed, pat.date_created)
+                    COALESCE(pat.date_changed, pat.date_created),
+                    COALESCE(per.date_voided, per.date_created),
+                    COALESCE(pat.date_voided, pat.date_created)
                   )                                AS effective_changed
                 FROM patient pat
                 JOIN person  per ON per.person_id = pat.patient_id
                 WHERE GREATEST(
                         COALESCE(per.date_changed, per.date_created),
-                        COALESCE(pat.date_changed, pat.date_created)
+                        COALESCE(pat.date_changed, pat.date_created),
+                        COALESCE(per.date_voided, per.date_created),
+                        COALESCE(pat.date_voided, pat.date_created)
                       ) > ?
                    OR (GREATEST(
                         COALESCE(per.date_changed, per.date_created),
-                        COALESCE(pat.date_changed, pat.date_created)
+                        COALESCE(pat.date_changed, pat.date_created),
+                        COALESCE(per.date_voided, per.date_created),
+                        COALESCE(pat.date_voided, pat.date_created)
                       ) = ? AND per.person_id > ?)
                 ORDER BY effective_changed, per.person_id
                 LIMIT ?

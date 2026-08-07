@@ -36,6 +36,18 @@ adhère à [Semantic Versioning](https://semver.org/).
 
 ### Corrigé
 
+- **Suppressions logiques (void) invisibles côté hub (SYNC-10)** : la borne de
+  pagination des extracteurs ne tenait compte que de
+  `COALESCE(date_changed, date_created)`. Or, sur OpenMRS, voider une ligne
+  renseigne `date_voided` mais ne met pas toujours à jour `date_changed` : la
+  suppression ne faisait donc pas avancer le watermark, la ligne voidée n'était
+  jamais renvoyée et le hub conservait une **donnée fantôme** (encore comptée
+  dans les analyses Superset). Tous les extracteurs bornent désormais sur
+  `GREATEST(COALESCE(date_changed, date_created), COALESCE(date_voided, date_created))`
+  (idem pour les entités composées patient/personne et PTME mère/enfant), de
+  sorte qu'un void récent repasse dans la fenêtre et propage `voided=true`.
+  Couvert par `EncounterVoidedWatermarkIT` (MySQL testcontainers) : capture du
+  void + contre-épreuve que l'ancienne borne le ratait.
 - **`SQLITE_BUSY` (« database is locked ») sous charge** : régression introduite
   par le pipeline découplé de la 2.1.2. Le producteur (`enqueueBatch`) et le
   consommateur (`markSent`/`markRejected`/`updateWatermark`) écrivaient en

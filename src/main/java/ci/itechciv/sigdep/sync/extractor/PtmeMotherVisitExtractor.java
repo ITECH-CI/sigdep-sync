@@ -49,12 +49,12 @@ public class PtmeMotherVisitExtractor implements DataExtractor {
                        v.continuing_arv,
                        v.continuing_ctx,
                        v.voided,
-                       COALESCE(v.date_changed, v.date_created) AS effective_changed
+                       GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) AS effective_changed
                 FROM ptme_mother_followup_visit v
                 JOIN ptme_mother_followup f ON f.mother_followup_id = v.mother_followup_id
                 JOIN ptme_pregnant_patient p ON p.pregnant_patient_id = f.pregnant_patient_id
-                WHERE COALESCE(v.date_changed, v.date_created) > ?
-                   OR (COALESCE(v.date_changed, v.date_created) = ?
+                WHERE GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) > ?
+                   OR (GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) = ?
                        AND v.mother_followup_visit_id > ?)
                 ORDER BY effective_changed, v.mother_followup_visit_id
                 LIMIT ?
