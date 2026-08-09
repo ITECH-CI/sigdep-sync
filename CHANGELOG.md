@@ -7,6 +7,22 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.2.2] — 2026-08-09
+
+### Corrigé
+
+- **`UPSERT_FAILED` en boucle sur `patients.birth_place` (value too long).**
+  OpenMRS stocke parfois des valeurs texte d'obs polluées par du padding
+  d'espaces (observé : `"ABOBO"` suivi de ~300 espaces = 313 caractères, et une
+  valeur entièrement blanche de 1988 caractères). Non trimée, cette valeur
+  dépassait `character varying(255)` sur `core.patients.birth_place` côté hub et
+  faisait rejeter l'initiation à chaque cycle (`DataIntegrityViolationException`).
+  `ObsPivot` normalise désormais les valeurs texte (`value_text`, `coded_name`) :
+  `strip()`, et une valeur devenue vide est traitée comme absente (`null`, ce qui
+  laisse le `COALESCE` du hub préserver la donnée existante au lieu de l'écraser).
+  Corrige à la racine pour tous les champs texte dérivés d'obs, pas seulement
+  birth_place. Couvert par `ObsPivotTrimTest`.
+
 ## [2.2.1] — 2026-08-09
 
 ### Corrigé

@@ -125,8 +125,15 @@ public class ObsPivot {
 
                     BigDecimal num = rs.getBigDecimal("value_numeric");
                     Timestamp dt = rs.getTimestamp("value_datetime");
-                    String text = rs.getString("value_text");
-                    String codedName = rs.getString("coded_name");
+                    // Normaliser les valeurs texte : OpenMRS stocke parfois des
+                    // saisies polluées par du padding d'espaces (ex. "ABOBO" suivi
+                    // de 300+ espaces, ou une valeur entièrement blanche). Non
+                    // trimé, un tel value_text dépasse la largeur des colonnes du
+                    // hub (value too long for character varying(255) sur
+                    // patients.birth_place) et fait rejeter le record en boucle.
+                    // On trime, et un texte devenu vide est traité comme absent.
+                    String text = trimToNull(rs.getString("value_text"));
+                    String codedName = trimToNull(rs.getString("coded_name"));
 
                     ObsValue v;
                     if (num != null) {
@@ -186,6 +193,13 @@ public class ObsPivot {
             catch (NumberFormatException e) { return null; }
         }
         return null;
+    }
+
+    /** Trime une chaîne ; renvoie null si elle est nulle ou vide après trim. */
+    static String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.strip();
+        return t.isEmpty() ? null : t;
     }
 
     public static String asString(ObsValue v) {
