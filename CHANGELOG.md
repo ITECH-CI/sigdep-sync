@@ -7,6 +7,25 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.2.1] — 2026-08-09
+
+### Corrigé
+
+- **Rejets `UNKNOWN_PATIENT` éternels sur des encounters orphelins.** Les
+  extracteurs d'encounters Closure, LabResult, Initiation et Tpt joignaient
+  seulement `person` (`JOIN person ON person_id = e.patient_id`), pas `patient`.
+  Un `encounter.patient_id` pointant vers une `person` qui n'est PAS un
+  `patient` (relation, prestataire, contact — ou patient dont la ligne
+  `patient` a disparu) remontait donc avec un UUID que `PatientExtractor`
+  (`FROM patient JOIN person`) n'extrait jamais : le hub rejetait l'encounter en
+  `UNKNOWN_PATIENT` (« not yet ingested ») à **chaque cycle, indéfiniment**
+  (observé en prod : ~79 000 rejets de closures sur un même `person_id`
+  orphelin). Ces 4 extracteurs joignent désormais `patient` (comme le faisait
+  déjà `VisitExtractor`) : l'encounter vers une non-`patient` n'est simplement
+  plus émis. Couvert par `EncounterOrphanPersonIT` (MySQL testcontainers) :
+  exclusion de l'orphelin + contre-épreuve que l'ancienne jointure le laissait
+  passer.
+
 ## [2.2.0] — 2026-08-07
 
 ### Ajouté

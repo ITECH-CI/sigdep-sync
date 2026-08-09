@@ -64,6 +64,12 @@ public class LabResultExtractor implements DataExtractor {
                        GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) AS effective_changed
                 FROM encounter e
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
+                -- Exiger un vrai patient : e.patient_id peut pointer vers une
+                -- person NON-patient (relation, prestataire…). Sans ce JOIN,
+                -- l'encounter remonterait avec un UUID que PatientExtractor
+                -- (FROM patient JOIN person) n'extrait jamais → rejet
+                -- UNKNOWN_PATIENT éternel côté hub.
+                JOIN patient pat       ON pat.patient_id = e.patient_id
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid = ?
                   AND (GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) > ?
