@@ -94,32 +94,45 @@ purgées (statut `DEAD_LETTER` côté agent). Sinon les rejets se recréent.
 `value too long for type character varying(255)` sur
 `core.patients.birth_place`. Observé au site 22 : 1 record rejeté 90 fois.
 
-**Cause racine.** OpenMRS stocke des `obs.value_text` **noyés dans des espaces**.
-Constaté en base : `"ABOBO"` suivi de ~300 espaces (**313 caractères**), et une
-valeur **entièrement blanche de 1988 caractères**. La vraie donnée fait 5
-caractères ; le padding la fait déborder de la colonne cible du hub.
+**Cause racine.** OpenMRS stocke des `obs.value_text` **noyés dans des espaces**,
+en bordure **et à l'intérieur**. Constaté en base : une valeur `"ABOBO"` + ~300
+espaces (**313 caractères**) ; une valeur entièrement blanche de **1988
+caractères** ; et surtout `"ABOBO" + 285 espaces + "ABOBO"` (**295 caractères
+après simple trim des bords**) — la saisie a été tapée plusieurs fois dans le
+même champ. La vraie donnée fait quelques caractères ; le bruit la fait déborder
+de la colonne cible du hub.
 
-**Correctif logiciel.** *(agent v2.2.2)* `ObsPivot` normalise les valeurs texte
-(`value_text`, `coded_name`) : `strip()` systématique ; une valeur devenue vide
-est traitée comme **absente** (`null`) — ce qui laisse le `COALESCE` du hub
-préserver une éventuelle valeur existante au lieu de l'écraser par du blanc.
+**Correctif logiciel.** *(agent v2.2.2 puis v2.2.3)* `ObsPivot.normalizeText`
+normalise les valeurs texte (`value_text`, `coded_name`) : **collapse de toute
+suite de blancs** (espaces, tabs, sauts de ligne) en un seul espace, `strip()`,
+puis **troncature à 255** (`MAX_TEXT_LEN`). Une valeur devenue vide est traitée
+comme **absente** (`null`) — ce qui laisse le `COALESCE` du hub préserver une
+valeur existante au lieu de l'écraser par du blanc. Le simple `strip()` de la
+2.2.2 ne suffisait pas (bruit interne non retiré) ; le collapse règle tous les
+cas.
 
 **Détection (source OpenMRS).**
 ```sql
--- Obs texte dont la valeur trimée est bien plus courte que la valeur brute
--- (padding), ou entièrement blanche
+-- Obs texte dont la valeur, une fois les blancs multiples réduits, est bien
+-- plus courte que la valeur trimée : révèle le bruit d'espaces INTERNE (pas
+-- seulement en bordure). REGEXP_REPLACE collapse les suites de blancs.
 SELECT o.obs_id, c.uuid AS concept_uuid,
-       LENGTH(o.value_text)          AS longueur_brute,
-       LENGTH(TRIM(o.value_text))    AS longueur_utile,
-       TRIM(o.value_text)            AS valeur
+       LENGTH(o.value_text)                                   AS longueur_brute,
+       LENGTH(TRIM(o.value_text))                             AS longueur_trimee,
+       LENGTH(TRIM(REGEXP_REPLACE(o.value_text, '[[:space:]]+', ' ')))
+                                                              AS longueur_collapsee,
+       TRIM(REGEXP_REPLACE(o.value_text, '[[:space:]]+', ' ')) AS valeur_propre
 FROM obs o
 JOIN concept c ON c.concept_id = o.concept_id
 WHERE o.voided = 0
   AND o.value_text IS NOT NULL
-  AND LENGTH(o.value_text) <> LENGTH(TRIM(o.value_text))
+  AND LENGTH(TRIM(o.value_text))
+      <> LENGTH(TRIM(REGEXP_REPLACE(o.value_text, '[[:space:]]+', ' ')))
 ORDER BY longueur_brute DESC
 LIMIT 100;
 ```
+> `REGEXP_REPLACE` existe sur MySQL 8+. Sur MySQL 5.7, se rabattre sur la
+> détection par bordure (`LENGTH(value_text) <> LENGTH(TRIM(value_text))`).
 
 **Nettoyage source recommandé.** Optionnel (le correctif agent suffit à la
 synchro), mais utile pour la qualité locale : trimmer les `value_text` en base,
