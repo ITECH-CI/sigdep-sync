@@ -411,6 +411,15 @@ la valeur est erronée. Ne pas faire créer la ligne par l'agent — les
 sites sont des données de référence et vivent dans la migration de
 seed du hub.
 
+### Qualité des données (rejets liés à la donnée source)
+
+Certains rejets (`UNKNOWN_PATIENT` persistants, `UPSERT_FAILED`) viennent de la
+**qualité de la donnée saisie dans OpenMRS**, pas d'un bug de synchro. Les cas
+rencontrés, leur diagnostic, les correctifs et les **requêtes de détection** à
+passer sur une base avant déploiement sont recensés dans
+[docs/data-quality.md](docs/data-quality.md). À consulter dès qu'un site présente
+un pic de rejets, et à compléter (gabarit `DQ-NN`) quand un nouveau cas apparaît.
+
 ## Licence
 
 À définir en session plénière avec le HMIS TWG ; aucun fichier de
