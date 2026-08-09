@@ -125,15 +125,17 @@ public class ObsPivot {
 
                     BigDecimal num = rs.getBigDecimal("value_numeric");
                     Timestamp dt = rs.getTimestamp("value_datetime");
-                    // Normaliser les valeurs texte : OpenMRS stocke parfois des
-                    // saisies polluées par du padding d'espaces (ex. "ABOBO" suivi
-                    // de 300+ espaces, ou une valeur entièrement blanche). Non
-                    // trimé, un tel value_text dépasse la largeur des colonnes du
-                    // hub (value too long for character varying(255) sur
-                    // patients.birth_place) et fait rejeter le record en boucle.
-                    // On trime, et un texte devenu vide est traité comme absent.
-                    String text = trimToNull(rs.getString("value_text"));
-                    String codedName = trimToNull(rs.getString("coded_name"));
+                    // Normaliser les valeurs texte : OpenMRS stocke des saisies
+                    // polluées par des espaces — non seulement en bordure mais
+                    // AUSSI à l'intérieur (ex. "<290 espaces>ABOBO<espaces>ABOBO"
+                    // = 295 car. de bruit pour "ABOBO ABOBO"). Un simple strip()
+                    // des bords ne suffit pas : la valeur dépasse encore la
+                    // largeur des colonnes du hub (character varying(255) sur
+                    // patients.birth_place) → rejet en boucle. On COLLAPSE toute
+                    // suite de blancs en un seul espace, on strip, on tronque à
+                    // MAX_TEXT_LEN, et un texte devenu vide est traité comme absent.
+                    String text = normalizeText(rs.getString("value_text"));
+                    String codedName = normalizeText(rs.getString("coded_name"));
 
                     ObsValue v;
                     if (num != null) {
@@ -195,11 +197,26 @@ public class ObsPivot {
         return null;
     }
 
-    /** Trime une chaîne ; renvoie null si elle est nulle ou vide après trim. */
-    static String trimToNull(String s) {
+    /**
+     * Longueur maximale d'une valeur texte d'obs. Aligné sur la plus large des
+     * colonnes texte du hub alimentées par une obs (patients.birth_place =
+     * VARCHAR(255)). Une vraie valeur (nom de commune, statut…) est bien en deçà ;
+     * ce plafond ne coupe que du bruit de saisie.
+     */
+    static final int MAX_TEXT_LEN = 255;
+
+    /**
+     * Normalise une valeur texte d'obs OpenMRS, souvent polluée par des espaces
+     * (en bordure ET à l'intérieur) : collapse toute suite de blancs Unicode en
+     * un seul espace, strip, tronque à {@link #MAX_TEXT_LEN}. Renvoie null si la
+     * valeur est nulle ou vide après normalisation (le COALESCE du hub préserve
+     * alors l'existant au lieu de l'écraser par du blanc).
+     */
+    static String normalizeText(String s) {
         if (s == null) return null;
-        String t = s.strip();
-        return t.isEmpty() ? null : t;
+        String t = s.replaceAll("\\s+", " ").strip();
+        if (t.isEmpty()) return null;
+        return t.length() > MAX_TEXT_LEN ? t.substring(0, MAX_TEXT_LEN) : t;
     }
 
     public static String asString(ObsValue v) {

@@ -7,6 +7,20 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.2.3] — 2026-08-09
+
+### Corrigé
+
+- **`UPSERT_FAILED` birth_place — complément au fix 2.2.2.** Le `strip()` de la
+  2.2.2 ne retirait que les espaces de **bordure**. Or la donnée prod réelle
+  portait aussi du bruit d'espaces **interne** (`"ABOBO" + 285 espaces + "ABOBO"`
+  = 295 caractères après strip) → toujours > `varchar(255)`, record encore
+  rejeté en boucle. `ObsPivot.normalizeText` **collapse désormais toute suite de
+  blancs (espaces, tabs, sauts de ligne) en un seul espace**, strip, puis
+  **tronque à 255** (`MAX_TEXT_LEN`). `"ABOBO … ABOBO"` → `"ABOBO ABOBO"`. Aucune
+  saisie polluée ne peut plus faire déborder une colonne texte du hub. Couvert
+  par `ObsPivotTrimTest` (collapse interne, tabs/newlines, troncature).
+
 ## [2.2.2] — 2026-08-09
 
 ### Corrigé

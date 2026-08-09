@@ -27,7 +27,7 @@
 
     <properties>
         <java.version>17</java.version>
-        <revision>2.2.2-SNAPSHOT</revision>
+        <revision>2.2.3-SNAPSHOT</revision>
         <!-- SHA git court, injecté par la CI (-Dgit.sha=...). 'unknown' en
              build local où le commit exact importe peu. -->
         <git.sha>unknown</git.sha>
