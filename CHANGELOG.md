@@ -7,6 +7,20 @@ adhère à [Semantic Versioning](https://semver.org/).
 > l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
 > le suivi ci-dessous.
 
+## [2.2.4] — 2026-08-11
+
+### Corrigé
+
+- **Obs non-résultat remontées dans `lab_results` (DQ-04).** `LabResultExtractor`
+  prenait TOUTES les obs d'un encounter « Biologie-Bilan », y compris les
+  métadonnées de la demande d'analyse (unité de mesure, type de prélèvement, n°
+  d'échantillon) et des obs cliniques (grossesse/allaitement en cours) — ~162 k
+  lignes de bruit sur ~1,08 M en prod (~15 %). L'extracteur exclut désormais ces
+  7 concepts (`NON_RESULT_CONCEPTS`, filtre `AND c.uuid NOT IN (…)`). Les examens
+  à résultat codé (Type VIH, Antigène HBs, CV qualitatif…) restent captés via
+  `value_coded` (pas un bug). Détail et chantier de modélisation à venir
+  (rattacher ces métadonnées au résultat) dans `docs/data-quality.md`.
+
 ## [2.2.3] — 2026-08-09
 
 ### Corrigé

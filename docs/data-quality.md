@@ -140,6 +140,62 @@ et former les agents de saisie à ne pas coller de texte dans les mauvais champs
 
 ---
 
+### DQ-04 — Obs non-résultat dans `lab_results` (métadonnées de bilan)
+
+**Symptôme.** La table `core.lab_results` contient ~15 % de lignes qui ne sont
+pas des résultats d'examen (constaté en prod : ~162 k sur 1,08 M). Visibles à
+l'export « Biologie » comme des « examens » qui n'en sont pas.
+
+**Cause racine.** `LabResultExtractor` sélectionne un encounter de type
+« Biologie-Bilan » puis remonte **TOUTES ses obs**, sans filtrer sur le concept.
+Or un tel encounter porte, en plus des résultats, des obs de **contexte de la
+demande d'analyse** : unité de mesure, type de prélèvement, n° d'échantillon,
+et des obs cliniques (grossesse/allaitement en cours). Elles ont une valeur
+(souvent `value_coded`), donc ne sont pas filtrées par le garde « obs sans
+valeur ».
+
+Concepts exclus (liste noire dans `LabResultExtractor.NON_RESULT_CONCEPTS`) :
+
+| Concept | UUID | Volume prod | Nature |
+|---------|------|-------------|--------|
+| Unité de mesure Creatinine | `164604AAA…` | 45 647 | métadonnée |
+| Unité de mesure glycemie   | `164605AAA…` | 43 623 | métadonnée |
+| Unité de mesure Urée       | `164602AAA…` |  1 168 | métadonnée |
+| Specimen number            | `162086AAA…` | 17 527 | métadonnée (n° labo) |
+| Type de prélèvement        | `CI0050007AAA…` | 15 748 | métadonnée |
+| Grossesse en cours         | `5272AAA…`   | 19 552 | obs clinique |
+| Allaitement en cours       | `164764AAA…` | 19 552 | obs clinique |
+
+**Correctif logiciel.** *(agent, à venir)* L'extracteur exclut ces concepts
+(`AND c.uuid NOT IN (…)`). Les résultats à valeur codée (Type VIH, Antigène HBs,
+CV qualitatif…) sont, eux, correctement captés via `value_coded` — pas un bug.
+
+**Détection (hub).**
+```sql
+SELECT test_name, count(*) FROM core.lab_results
+WHERE voided = FALSE
+  AND test_uuid IN ('164604AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','164605AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                    '164602AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','162086AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                    'CI0050007AAAAAAAAAAAAAAAAAAAAAAAAAAA','5272AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                    '164764AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+GROUP BY test_name;
+```
+
+**Remise en état hub.** Nettoyer l'historique une fois l'extraction corrigée :
+`UPDATE core.lab_results SET voided = TRUE WHERE test_uuid IN (…)` (ou DELETE).
+
+> **⚠️ Chantier de modélisation à prévoir (NE PAS oublier).** Ces métadonnées
+> (unité, type de prélèvement, n° d'échantillon) **sont pertinentes** : elles
+> décrivent le contexte d'un résultat de bilan. On les exclut aujourd'hui faute
+> de modèle pour les **rattacher au bon résultat** — dans OpenMRS elles sont des
+> obs sœurs sur le même encounter, sans lien formel fiable vers l'obs-résultat
+> (pas de FK obs→obs garantie ; `obs_group` inconstant). Reconstruire ce lien
+> proprement demande de revoir la modélisation (colonnes de contexte sur
+> `lab_results`, ou table `lab_specimen` liée). À rouvrir quand le besoin
+> analytique le justifiera.
+
+---
+
 ## Gabarit pour un nouveau problème (DQ-NN)
 
 > **Symptôme** — ce qu'on observe (rejets, code d'erreur, volume, site).

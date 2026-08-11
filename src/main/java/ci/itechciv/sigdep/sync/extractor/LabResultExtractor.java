@@ -38,6 +38,24 @@ public class LabResultExtractor implements DataExtractor {
     // Encounter type UUID for "Biologie-Bilan"
     private static final String LAB_ENCOUNTER_UUID = "b2750363-7c00-4ece-bceb-47ab09b8d21b";
 
+    // Concepts présents sur un encounter de biologie mais qui NE SONT PAS des
+    // résultats d'examen : métadonnées de la demande d'analyse (unité de mesure,
+    // type de prélèvement, n° d'échantillon) et obs cliniques (grossesse,
+    // allaitement). Sans ce filtre, l'extracteur remontait TOUTES les obs de
+    // l'encounter → ~162 k lignes de bruit dans core.lab_results.
+    // NB : ces métadonnées restent pertinentes pour le CONTEXTE d'un résultat ;
+    // on les exclut aujourd'hui faute de modèle pour les rattacher proprement.
+    // Chantier futur documenté dans docs/data-quality.md (DQ-04).
+    private static final java.util.Set<String> NON_RESULT_CONCEPTS = java.util.Set.of(
+            "164604AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // Unité de mesure Creatinine
+            "164605AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // Unité de mesure glycemie
+            "164602AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // Unité de mesure Urée
+            "162086AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // Specimen number
+            "CI0050007AAAAAAAAAAAAAAAAAAAAAAAAAAA", // Type de prélèvement
+            "5272AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", // Grossesse en cours (obs clinique)
+            "164764AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  // Allaitement en cours (obs clinique)
+    );
+
     private final JdbcTemplate localDb;
 
     public LabResultExtractor(@Qualifier("localJdbcTemplate") JdbcTemplate localDb) {
@@ -95,7 +113,13 @@ public class LabResultExtractor implements DataExtractor {
 
         // Build the "?,?,..." for the IN clause and load all obs at once.
         String placeholders = String.join(",", encounters.stream().map(e -> "?").toList());
-        Object[] ids = encounters.stream().map(e -> e.encounterId).toArray();
+        // Placeholders + args pour exclure les concepts non-résultat (liste noire).
+        String excludePlaceholders = String.join(",",
+                NON_RESULT_CONCEPTS.stream().map(u -> "?").toList());
+        Object[] ids = java.util.stream.Stream.concat(
+                        encounters.stream().map(e -> (Object) e.encounterId),
+                        NON_RESULT_CONCEPTS.stream().map(u -> (Object) u))
+                .toArray();
 
         List<ObsRow> obsRows = localDb.query(
                 """
@@ -141,7 +165,8 @@ public class LabResultExtractor implements DataExtractor {
                 JOIN concept c           ON c.concept_id      = o.concept_id
                 LEFT JOIN concept_numeric cn_num ON cn_num.concept_id = o.concept_id
                 WHERE o.encounter_id IN (%s)
-                """.formatted(placeholders),
+                  AND c.uuid NOT IN (%s)
+                """.formatted(placeholders, excludePlaceholders),
                 (rs, i) -> new ObsRow(
                         UUID.fromString(rs.getString("obs_uuid")),
                         rs.getLong("encounter_id"),
