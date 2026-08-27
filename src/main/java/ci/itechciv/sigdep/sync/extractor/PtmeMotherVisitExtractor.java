@@ -35,25 +35,32 @@ public class PtmeMotherVisitExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
+
         return localDb.query(
                 """
-                SELECT v.uuid              AS v_uuid,
+                SELECT v.mother_followup_visit_id,
+                       v.uuid              AS v_uuid,
                        p.uuid              AS mother_uuid,
                        v.visit_date,
                        v.gestational_age,
                        v.continuing_arv,
                        v.continuing_ctx,
                        v.voided,
-                       COALESCE(v.date_changed, v.date_created) AS effective_changed
+                       GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) AS effective_changed
                 FROM ptme_mother_followup_visit v
                 JOIN ptme_mother_followup f ON f.mother_followup_id = v.mother_followup_id
                 JOIN ptme_pregnant_patient p ON p.pregnant_patient_id = f.pregnant_patient_id
-                WHERE COALESCE(v.date_changed, v.date_created) > ?
-                ORDER BY effective_changed
+                WHERE GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) > ?
+                   OR (GREATEST(COALESCE(v.date_changed, v.date_created), COALESCE(v.date_voided, v.date_created)) = ?
+                       AND v.mother_followup_visit_id > ?)
+                ORDER BY effective_changed, v.mother_followup_visit_id
                 LIMIT ?
                 """,
                 (rs, i) -> {
+                    long visitId = rs.getLong("mother_followup_visit_id");
                     UUID uuid = UUID.fromString(rs.getString("v_uuid"));
                     UUID motherUuid = UUID.fromString(rs.getString("mother_uuid"));
                     Integer arv = (Integer) rs.getObject("continuing_arv");
@@ -78,8 +85,9 @@ public class PtmeMotherVisitExtractor implements DataExtractor {
                             rs.getBoolean("voided"));
 
                     LocalDateTime changed = rs.getTimestamp("effective_changed").toLocalDateTime();
-                    return new CanonicalRecord(EntityType.PTME_MOTHER_VISITS, uuid, changed, dto);
+                    return new CanonicalRecord(
+                            EntityType.PTME_MOTHER_VISITS, uuid, changed, visitId, dto);
                 },
-                Timestamp.valueOf(since), batchSize);
+                Timestamp.valueOf(sinceDate), Timestamp.valueOf(sinceDate), sinceId, batchSize);
     }
 }

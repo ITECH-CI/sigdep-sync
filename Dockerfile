@@ -12,6 +12,20 @@
 
 FROM eclipse-temurin:17-jre-jammy
 
+# Métadonnées de build, passées par la CI (--build-arg) et exposées en
+# labels OCI standard. Permettent d'identifier précisément l'image qui tourne
+# sur un site (docker inspect / registry). Défauts 'unknown' pour un build
+# local sans arguments.
+ARG IMAGE_VERSION=unknown
+ARG IMAGE_REVISION=unknown
+ARG IMAGE_CREATED=unknown
+LABEL org.opencontainers.image.title="SIGDEP-3 edge sync agent" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.created="${IMAGE_CREATED}" \
+      org.opencontainers.image.source="https://github.com/ITECH-CI/sigdep-sync" \
+      org.opencontainers.image.licenses="Proprietary"
+
 # Non-root user for defence in depth.
 RUN groupadd --system --gid 1001 sigdep \
  && useradd  --system --uid 1001 --gid sigdep \

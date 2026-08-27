@@ -3,7 +3,207 @@
 Le format suit [Keep a Changelog](https://keepachangelog.com/) et
 adhère à [Semantic Versioning](https://semver.org/).
 
-## [1.0.3] — 2026-05-21
+> Note : les entrées 2.0.0 → 2.1.0 n'ont pas été reportées ici au fil de
+> l'eau ; voir les tags Git et l'historique des commits. La 2.1.1 reprend
+> le suivi ci-dessous.
+
+## [2.2.4] — 2026-08-11
+
+### Corrigé
+
+- **Obs non-résultat remontées dans `lab_results` (DQ-04).** `LabResultExtractor`
+  prenait TOUTES les obs d'un encounter « Biologie-Bilan », y compris les
+  métadonnées de la demande d'analyse (unité de mesure, type de prélèvement, n°
+  d'échantillon) et des obs cliniques (grossesse/allaitement en cours) — ~162 k
+  lignes de bruit sur ~1,08 M en prod (~15 %). L'extracteur exclut désormais ces
+  7 concepts (`NON_RESULT_CONCEPTS`, filtre `AND c.uuid NOT IN (…)`). Les examens
+  à résultat codé (Type VIH, Antigène HBs, CV qualitatif…) restent captés via
+  `value_coded` (pas un bug). Détail et chantier de modélisation à venir
+  (rattacher ces métadonnées au résultat) dans `docs/data-quality.md`.
+
+## [2.2.3] — 2026-08-09
+
+### Corrigé
+
+- **`UPSERT_FAILED` birth_place — complément au fix 2.2.2.** Le `strip()` de la
+  2.2.2 ne retirait que les espaces de **bordure**. Or la donnée prod réelle
+  portait aussi du bruit d'espaces **interne** (`"ABOBO" + 285 espaces + "ABOBO"`
+  = 295 caractères après strip) → toujours > `varchar(255)`, record encore
+  rejeté en boucle. `ObsPivot.normalizeText` **collapse désormais toute suite de
+  blancs (espaces, tabs, sauts de ligne) en un seul espace**, strip, puis
+  **tronque à 255** (`MAX_TEXT_LEN`). `"ABOBO … ABOBO"` → `"ABOBO ABOBO"`. Aucune
+  saisie polluée ne peut plus faire déborder une colonne texte du hub. Couvert
+  par `ObsPivotTrimTest` (collapse interne, tabs/newlines, troncature).
+
+## [2.2.2] — 2026-08-09
+
+### Corrigé
+
+- **`UPSERT_FAILED` en boucle sur `patients.birth_place` (value too long).**
+  OpenMRS stocke parfois des valeurs texte d'obs polluées par du padding
+  d'espaces (observé : `"ABOBO"` suivi de ~300 espaces = 313 caractères, et une
+  valeur entièrement blanche de 1988 caractères). Non trimée, cette valeur
+  dépassait `character varying(255)` sur `core.patients.birth_place` côté hub et
+  faisait rejeter l'initiation à chaque cycle (`DataIntegrityViolationException`).
+  `ObsPivot` normalise désormais les valeurs texte (`value_text`, `coded_name`) :
+  `strip()`, et une valeur devenue vide est traitée comme absente (`null`, ce qui
+  laisse le `COALESCE` du hub préserver la donnée existante au lieu de l'écraser).
+  Corrige à la racine pour tous les champs texte dérivés d'obs, pas seulement
+  birth_place. Couvert par `ObsPivotTrimTest`.
+
+## [2.2.1] — 2026-08-09
+
+### Corrigé
+
+- **Rejets `UNKNOWN_PATIENT` éternels sur des encounters orphelins.** Les
+  extracteurs d'encounters Closure, LabResult, Initiation et Tpt joignaient
+  seulement `person` (`JOIN person ON person_id = e.patient_id`), pas `patient`.
+  Un `encounter.patient_id` pointant vers une `person` qui n'est PAS un
+  `patient` (relation, prestataire, contact — ou patient dont la ligne
+  `patient` a disparu) remontait donc avec un UUID que `PatientExtractor`
+  (`FROM patient JOIN person`) n'extrait jamais : le hub rejetait l'encounter en
+  `UNKNOWN_PATIENT` (« not yet ingested ») à **chaque cycle, indéfiniment**
+  (observé en prod : ~79 000 rejets de closures sur un même `person_id`
+  orphelin). Ces 4 extracteurs joignent désormais `patient` (comme le faisait
+  déjà `VisitExtractor`) : l'encounter vers une non-`patient` n'est simplement
+  plus émis. Couvert par `EncounterOrphanPersonIT` (MySQL testcontainers) :
+  exclusion de l'orphelin + contre-épreuve que l'ancienne jointure le laissait
+  passer.
+
+## [2.2.0] — 2026-08-07
+
+### Ajouté
+
+- **Résilience du push (SYNC-12)** : un échec de **transport** (coupure réseau,
+  timeout, HTTP 5xx/429, `stream was reset: CANCEL` sur HTTP/2) est désormais
+  distingué d'un rejet **applicatif** (400 : lot invalide). Sur un échec de
+  transport, le lot est **ré-essayé** avec backoff exponentiel borné + jitter
+  (`SIGDEP_HTTP_MAX_RETRIES`, défaut 5 ; délais `…_RETRY_INITIAL_DELAY_MS` /
+  `…_RETRY_MAX_DELAY_MS`) avant de mettre l'entité en pause. Auparavant, la
+  moindre coupure d'une seconde mettait l'entité en pause pour tout le cycle —
+  problème observé sur `LAB_RESULTS` (seule entité enchaînant beaucoup de
+  requêtes) quand nginx fermait la connexion HTTP/2 via `GOAWAY`. Un rejet
+  applicatif, lui, ne provoque **aucun** retry (comportement inchangé).
+- **Taille de lot paramétrable par type d'entité** (`batch-size-overrides`) :
+  les entités aux payloads lourds peuvent utiliser des lots plus petits sans
+  changer le `batch-size` global. Défaut : `LAB_RESULTS: 100`
+  (`SIGDEP_BATCH_SIZE_LAB_RESULTS`). Réduit la taille des requêtes et la
+  sensibilité aux coupures de transport.
+- **Rapport de réconciliation (RECON-1)** (`--reconcile`) : commande one-shot
+  qui affiche, par `entity_type`, un ordre de grandeur des lignes en table
+  source OpenMRS, les compteurs d'outbox par statut (SENT / PENDING / REJECTED /
+  DEAD_LETTER) et le watermark courant — pour repérer une entité anormalement en
+  retard ou jamais synchronisée. Le compteur source est un `COUNT(*)` brut
+  (approximatif : sans les filtres d'extraction ni l'exclusion des `voided`).
+  Ne démarre pas de cycle (scheduler désactivé), s'arrête à la fin.
+- **Commande de remise en file des `DEAD_LETTER`** (`--requeue-dead-letter`) :
+  remet en file les lignes bloquées (rejets de validation ayant épuisé leurs
+  tentatives) une fois la cause corrigée côté hub — `status=PENDING`,
+  `attempts=0`, `last_error` conservé. Optionnellement ciblée par entité
+  (`--requeue-dead-letter=LAB_RESULTS`). La commande requeue puis arrête l'agent
+  sans démarrer de cycle (scheduler désactivé pour ce lancement), et passe par
+  le verrou d'écriture du buffer. Remplace le `UPDATE outbox` lancé à la main
+  via un conteneur `alpine + sqlite3`.
+- **Visibilité des identifiants exclus faute de mapping (SYNC-11)** : un type
+  `patient_identifier_type` OpenMRS absent de `identifier-mapping` était
+  jusqu'ici **exclu de la synchro en silence** — un site nommant son type ARV
+  autrement que les clés configurées voyait tous ses codes ARV disparaître sans
+  trace. L'agent loggue désormais un WARN la première fois qu'un type non mappé
+  est rencontré (dédupliqué pour ne pas spammer le journal), nommant le type et
+  le nombre d'identifiants concernés, avec la clé de config à ajouter.
+
+### Corrigé
+
+- **Suppressions logiques (void) invisibles côté hub (SYNC-10)** : la borne de
+  pagination des extracteurs ne tenait compte que de
+  `COALESCE(date_changed, date_created)`. Or, sur OpenMRS, voider une ligne
+  renseigne `date_voided` mais ne met pas toujours à jour `date_changed` : la
+  suppression ne faisait donc pas avancer le watermark, la ligne voidée n'était
+  jamais renvoyée et le hub conservait une **donnée fantôme** (encore comptée
+  dans les analyses Superset). Tous les extracteurs bornent désormais sur
+  `GREATEST(COALESCE(date_changed, date_created), COALESCE(date_voided, date_created))`
+  (idem pour les entités composées patient/personne et PTME mère/enfant), de
+  sorte qu'un void récent repasse dans la fenêtre et propage `voided=true`.
+  Couvert par `EncounterVoidedWatermarkIT` (MySQL testcontainers) : capture du
+  void + contre-épreuve que l'ancienne borne le ratait.
+- **`SQLITE_BUSY` (« database is locked ») sous charge** : régression introduite
+  par le pipeline découplé de la 2.1.2. Le producteur (`enqueueBatch`) et le
+  consommateur (`markSent`/`markRejected`/`updateWatermark`) écrivaient en
+  concurrence sur le buffer SQLite ; sur un gros backfill (p. ex. 5000+
+  lab_results en une transaction), l'enqueue tenait le verrou d'écriture plus
+  longtemps que le `busy_timeout` et l'autre écrivain échouait. Les écritures du
+  buffer sont désormais **sérialisées** par un verrou applicatif
+  (`BufferWriteLock`), ce qui élimine la contention à la racine. `busy_timeout`
+  porté à 5 s en complément.
+
+### Interne
+
+- **Tests d'intégration exécutés en CI** : les tests `*IT` (testcontainers
+  MySQL) n'étaient lancés NI par `mvn test` NI par la CI — surefire ne matche
+  que `*Test`, la CI faisait `mvn -DskipTests package`, et aucun failsafe
+  n'était configuré. Ils existaient sans jamais tourner. Ajout du plugin
+  failsafe (phase `verify`) et bascule de la CI `build.yml` vers `mvn verify`
+  (sans `-DskipTests`). `mvn test` reste unitaire pur (rapide, sans Docker) ;
+  `mvn verify` ajoute les IT.
+
+## [2.1.2] — non publié
+
+### Ajouté
+
+- **Pipeline extraction/push découplé** : l'extraction du lot suivant ne bloque
+  plus sur l'ACK du lot en cours. Profondeur bornée par `SIGDEP_PIPELINE_DEPTH`
+  (défaut 2) ; le pipeline se met en pause si le hub est injoignable, sans
+  sur-extraire. `sync_state` n'avance que sur ACK, ordre de push préservé par
+  entity_type.
+- **Version identifiable** : la version du JAR est alignée sur le tag Git
+  (`-Drevision`), logue au démarrage (version, SHA, date de build), et l'image
+  porte les labels OCI `version`/`revision`/`created`. L'image peut être
+  épinglée par digest dans `docker-compose.site.yml` (procédure au README).
+- **Smoke test de démarrage en CI** : l'image doit démarrer (sans base OpenMRS)
+  et échouer proprement sur config invalide avant d'être poussée sur GHCR.
+
+### Corrigé
+
+- **Pagination keyset composite `(date, id)`** : 10 extracteurs paginaient sur
+  la date seule et pouvaient sauter des lignes quand plus de `batchSize` lignes
+  partageaient le même `date_changed` (migration de masse OpenMRS). Tous passent
+  en keyset `(date, id)` avec tie-breaker sur la PK. Index recommandés
+  documentés (`docs/keyset-indexes.md`).
+- **Rejets de dépendance vs validation** : un `UNKNOWN_PATIENT` (parent pas
+  encore ingéré — décalage d'ordonnancement) ne consomme plus de tentative et
+  ne finit plus en `DEAD_LETTER` ; il est rejoué jusqu'à ce que le parent
+  existe. Compteur de dépendances en attente par entité + log DEBUG de
+  diagnostic. Vérifié : `COALESCE(date_changed, date_created)` extrait bien les
+  lignes jamais modifiées (`date_changed` NULL).
+- **Configuration fail-fast** : l'agent refuse de démarrer (code de sortie non
+  nul) si la config est invalide — URL du hub sans schéma, clé API restée à
+  `changeme`, code site absent… — au lieu d'échouer silencieusement à chaque
+  cycle. Le message nomme la variable d'environnement fautive (clé API masquée).
+- **Découpage DDL du buffer** robuste aux `;` en commentaire/littéral.
+
+### Performance
+
+- **Enqueue de l'outbox par lot** dans une transaction unique + `PRAGMA
+  journal_mode=WAL` / `synchronous=NORMAL` : l'enqueue de 500 lignes passe de
+  ~1,5 s à quelques dizaines de ms.
+- **Dédup des logs d'échec** d'extraction récurrents (1 stack au 1er échec, puis
+  résumé WARN, rappel périodique) au lieu de N stacks identiques par cycle.
+
+## [2.1.1] — non publié
+
+### Corrigé
+
+- **Rejeu du dépistage (screening)** : l'extracteur screening utilise
+  désormais un curseur **keyset** `(screening_date, hiv_screening_id)` au
+  lieu d'un simple `screening_date >= ?`. La table amont n'ayant pas de
+  `date_changed`, le curseur à granularité JOUR ne franchissait jamais la
+  frontière du jour courant et ré-extrayait toute la journée à chaque cycle
+  (rejeu absorbé en upsert idempotent côté hub, mais transactions
+  `audit.sync_batch` qui s'accumulaient). Le tie-breaker `id` est persisté
+  (`sync_state.last_id`, `outbox.source_id`) et le curseur n'avance que sur
+  un batch 100 % accepté → robuste aux rejets, aucune ligne sautée.
+  Migrations de schéma idempotentes (bases existantes non impactées).
+  (`73cb042`)
 
 ### Documentation
 

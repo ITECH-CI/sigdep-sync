@@ -7,10 +7,21 @@ sigdep:
     site-code: ${SIGDEP_SITE_CODE:UNKNOWN}
     central-api-url: ${SIGDEP_CENTRAL_API_URL:http://localhost:8080}
     batch-size: ${SIGDEP_BATCH_SIZE:500}
+    # Surcharges de taille de lot par entity_type (nom d'enum → taille), pour
+    # les entités aux payloads lourds. LAB_RESULTS agrège beaucoup d'obs par
+    # encounter : des lots plus petits réduisent la taille des requêtes et donc
+    # la sensibilité aux coupures de transport (cf. SYNC-12). Toute entité non
+    # listée retombe sur batch-size.
+    batch-size-overrides:
+      LAB_RESULTS: ${SIGDEP_BATCH_SIZE_LAB_RESULTS:100}
     sync-interval-minutes: ${SIGDEP_SYNC_INTERVAL_MINUTES:15}
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00
     max-reject-attempts: ${SIGDEP_MAX_REJECT_ATTEMPTS:10}
+    # Profondeur du pipeline extraction/push (lots « en vol » par entity_type).
+    # 1 = séquentiel (historique) ; 2 (défaut) recouvre l'extraction du lot
+    # suivant avec le round-trip réseau du lot en cours.
+    pipeline-depth: ${SIGDEP_PIPELINE_DEPTH:2}
     # OkHttp timeouts to the hub. Raise read/write for sites with a big
     # backfill on a slow link (LAB_RESULTS in particular can take time
     # to serialise + persist). Defaults match the historical hard-coded
@@ -19,9 +30,20 @@ sigdep:
       connect-timeout-seconds: ${SIGDEP_HTTP_CONNECT_TIMEOUT_SECONDS:10}
       read-timeout-seconds: ${SIGDEP_HTTP_READ_TIMEOUT_SECONDS:60}
       write-timeout-seconds: ${SIGDEP_HTTP_WRITE_TIMEOUT_SECONDS:60}
+      # Résilience du push : retry backoff+jitter sur un échec de TRANSPORT
+      # (réseau, 5xx, 429) avant de mettre l'entité en pause. Évite qu'une
+      # coupure d'une seconde coûte un cycle entier (défaut historique = pause
+      # immédiate, soit maxRetries=0).
+      max-retries: ${SIGDEP_HTTP_MAX_RETRIES:5}
+      retry-initial-delay-ms: ${SIGDEP_HTTP_RETRY_INITIAL_DELAY_MS:500}
+      retry-max-delay-ms: ${SIGDEP_HTTP_RETRY_MAX_DELAY_MS:30000}
     # Clé API du site (auth v2.0). Générée dans la console hub
     # (Sites → « Gérer » → Générer une clé), copiée ici une seule fois.
     api-key: ${SIGDEP_API_KEY:}
+    # URL JDBC de la base OpenMRS locale, exposée à SyncProperties pour la
+    # validation au démarrage. Même variable que local-db.jdbc-url ci-dessous
+    # (que DataSourcesConfig utilise pour construire la DataSource).
+    local-db-url: ${SIGDEP_LOCAL_DB_URL:jdbc:mysql://localhost:3306/openmrs?readOnly=true&useSSL=false}
     identifier-mapping:
       # OpenMRS patient_identifier_type.name  ->  core.identifier_types.code
       # Adjust for site-specific naming. Unmapped types are silently dropped.
@@ -37,6 +59,11 @@ sigdep:
     buffer-db:
       jdbc-url: jdbc:sqlite:${SIGDEP_BUFFER_PATH:/var/lib/sigdep-agent/buffer.sqlite}
       driver-class-name: org.sqlite.JDBC
+      # Les PRAGMA journal_mode=WAL et synchronous=NORMAL sont posés dans
+      # DataSourcesConfig via SQLiteConfig (les appliquer ici en
+      # connection-init-sql ne marche PAS : le driver xerial n'exécute que la
+      # 1re instruction d'une string multi-PRAGMA). Voir la doc du compromis de
+      # durabilité dans DataSourcesConfig.bufferDataSource().
     backfill:
       enabled: false
       max-requests-per-minute: 30

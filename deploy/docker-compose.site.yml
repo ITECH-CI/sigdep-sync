@@ -14,7 +14,14 @@
 
 services:
   sigdep-sync:
-    image: ghcr.io/itech-ci/sigdep-sync:${SIGDEP_SYNC_TAG:-latest}
+    # En production, ÉPINGLER PAR DIGEST (immuable) plutôt que par tag : un tag
+    # comme :2.1.2 peut être re-poussé, un digest sha256 non. Renseigner
+    # SIGDEP_SYNC_IMAGE dans le .env avec la référence complète, p. ex. :
+    #   SIGDEP_SYNC_IMAGE=ghcr.io/itech-ci/sigdep-sync@sha256:<digest>
+    # obtenue via  docker buildx imagetools inspect ghcr.io/itech-ci/sigdep-sync:<version>
+    # À défaut, on retombe sur le tag (SIGDEP_SYNC_TAG, 'latest' par défaut) —
+    # pratique pour un test, déconseillé en production. Voir README « Mode B ».
+    image: ${SIGDEP_SYNC_IMAGE:-ghcr.io/itech-ci/sigdep-sync:${SIGDEP_SYNC_TAG:-latest}}
     container_name: sigdep-sync
     restart: unless-stopped
 

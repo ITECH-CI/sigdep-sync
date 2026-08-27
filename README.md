@@ -179,6 +179,47 @@ cp deploy/.env.example /opt/sigdep-sync/.env
 docker compose -f /opt/sigdep-sync/docker-compose.yml up -d
 ```
 
+#### Épingler l'image par digest (recommandé en production)
+
+Un tag (`:2.1.2`, `:latest`) peut être re-poussé vers un contenu différent ;
+un **digest** `sha256:` est immuable et garantit que le site fait tourner
+exactement l'image validée. Récupérer le digest d'une version publiée :
+
+```bash
+docker buildx imagetools inspect ghcr.io/itech-ci/sigdep-sync:2.1.2 \
+  --format '{{.Manifest.Digest}}'
+# → sha256:abc123…
+```
+
+Puis le figer dans le `.env` du site (le compose lit `SIGDEP_SYNC_IMAGE` en
+priorité sur `SIGDEP_SYNC_TAG`) :
+
+```bash
+# /opt/sigdep-sync/.env
+SIGDEP_SYNC_IMAGE=ghcr.io/itech-ci/sigdep-sync@sha256:abc123…
+```
+
+#### Mettre à jour un site vers une nouvelle version
+
+```bash
+cd /opt/sigdep-sync
+# 1. Récupérer le digest de la nouvelle version (cf. ci-dessus) et mettre à
+#    jour SIGDEP_SYNC_IMAGE dans .env.
+# 2. Tirer la nouvelle image et recréer le conteneur :
+docker compose pull
+docker compose up -d
+# 3. Vérifier la version qui tourne — une ligne INFO au démarrage :
+docker compose logs --since 2m sigdep-sync | grep "sigdep-sync démarré"
+#    → sigdep-sync démarré — version=2.1.2 sha=<sha court> build=<date>
+#    On peut aussi lire les labels de l'image :
+docker inspect --format '{{json .Config.Labels}}' \
+  "$(docker compose images -q sigdep-sync)"
+```
+
+Le buffer SQLite et l'état de synchronisation vivent dans le volume
+`sigdep-buffer` — une mise à jour d'image les préserve. **Ne jamais**
+`docker compose down -v` (cela réinitialiserait le curseur de sync).
+
 ### Mode C — Service Windows (WinSW)
 
 Une archive ZIP autonome est attachée à chaque Release GitHub :
@@ -205,22 +246,33 @@ silencieusement perdu en chemin vers le hub. Trois briques :
    L'agent peut réémettre le même enregistrement n'importe combien de
    fois sans créer de doublons.
 2. **L'outbox SQLite** comme file durable. Chaque extraction y passe ;
-   l'agent n'avance sa watermark qu'une fois la page totalement
-   acceptée par le hub. Un crash en milieu de cycle déclenche un
-   nouveau renvoi à partir de la dernière watermark persistée, pas du
-   point où l'extraction s'était arrêtée.
-3. **Boucle de réessai par enregistrement pour les rejets côté hub.**
-   Quand le hub répond `accepted=N, rejected=M`, l'agent sépare la
-   page par `sourceUuid` : les lignes acceptées passent en `SENT`,
-   les rejetées en `REJECTED` avec le code et le message d'erreur. Au
-   cycle suivant, les lignes `REJECTED` sont repoussées **avant** les
-   nouvelles extractions, ce qui résout naturellement un ordre FK
-   incohérent (`UNKNOWN_PATIENT` lors d'un backfill initial) dès que
-   l'enregistrement parent manquant arrive.
+   l'agent n'avance son curseur persistant (`sync_state`) qu'une fois la
+   page totalement acceptée par le hub. Un crash en milieu de cycle
+   déclenche un nouveau renvoi à partir du dernier curseur persisté, pas
+   du point où l'extraction s'était arrêtée. La pagination est un
+   **keyset composite `(date_changed, id)`** : plus de `batchSize` lignes
+   au même `date_changed` (fréquent après une migration de masse OpenMRS)
+   ne sont jamais sautées. Voir [docs/keyset-indexes.md](docs/keyset-indexes.md)
+   pour les index recommandés sur la base source.
+3. **Réessai par enregistrement, distinguant dépendance et validation.**
+   Quand le hub répond `accepted=N, rejected=M`, l'agent sépare la page
+   par `sourceUuid`. Les lignes acceptées passent en `SENT`. Pour les
+   rejetées, deux cas :
+   - **rejet de dépendance** (`UNKNOWN_PATIENT` — le patient parent n'est
+     pas encore ingéré, simple décalage d'ordonnancement) : la ligne passe
+     en `REJECTED` **sans consommer de tentative** et est rejouée à chaque
+     cycle jusqu'à ce que le parent existe. Un décalage d'ordre ne produit
+     donc jamais de `DEAD_LETTER` définitif.
+   - **rejet de validation** (`UPSERT_FAILED`… — donnée invalide) : la
+     ligne consomme une tentative et bascule en `DEAD_LETTER` après
+     `SIGDEP_MAX_REJECT_ATTEMPTS` (défaut 10).
 
-Après `SIGDEP_MAX_REJECT_ATTEMPTS` réessais infructueux (défaut 10),
-la ligne passe en `DEAD_LETTER`. Le hub enregistre chaque rejet dans
-`audit.rejected_record`, exposé sur la page **Synchronisation →
+L'extraction et le push sont **découplés** (pipeline borné par
+`SIGDEP_PIPELINE_DEPTH`) : le lot suivant s'extrait pendant que le lot en
+cours attend son ACK, sans jamais sur-extraire si le hub est lent.
+
+Le hub enregistre chaque rejet dans `audit.rejected_record`, exposé sur la
+page **Synchronisation →
 Rejets** de la console : un admin voit l'UUID source exact, le
 message d'erreur, et clique « Résoudre » une fois la donnée corrigée.
 
@@ -276,6 +328,62 @@ sqlite3 /var/lib/sigdep-agent/buffer.sqlite \
    FROM outbox WHERE status='DEAD_LETTER' ORDER BY id LIMIT 20;"
 ```
 
+### Rapport de réconciliation
+
+Pour repérer d'un coup d'œil une entité anormalement en retard ou jamais
+synchronisée, la commande `--reconcile` affiche, par `entity_type` : un
+ordre de grandeur des lignes en table source OpenMRS, les compteurs d'outbox
+par statut (SENT / PENDING / REJECTED / DEAD_LETTER) et le watermark courant.
+
+```bash
+# systemd (l'agent peut rester en marche : lecture seule côté source)
+java -jar /opt/sigdep-sync/sigdep-sync.jar --reconcile
+
+# Docker (conteneur jetable, même volume + accès à la base source via .env)
+docker run --rm --env-file /opt/sigdep-sync/.env \
+  -v sigdep-sync_sigdep-buffer:/var/lib/sigdep-agent \
+  "$SIGDEP_SYNC_IMAGE" --reconcile
+```
+
+> ⚠️ Le compteur **SOURCE est approximatif** : c'est un `COUNT(*)` brut de la
+> table (`getSourceTable()`), sans les filtres propres à chaque extracteur
+> (type d'encounter, jointures PTME…) et **sans exclure les lignes `voided`**.
+> Il sert à détecter un écart grossier (entité à zéro alors qu'elle devrait
+> être peuplée, SENT très en dessous de la source), pas à un rapprochement
+> ligne à ligne. La commande ne démarre pas de cycle et s'arrête à la fin.
+
+### Débloquer des lignes `DEAD_LETTER`
+
+Une ligne passe en `DEAD_LETTER` après avoir épuisé ses tentatives sur un
+rejet de **validation** (données refusées par le hub — schéma trop court,
+contrainte, mapping manquant…). Elle sort alors du flux de retry automatique
+et attend une action manuelle. Une fois la **cause corrigée côté hub**
+(migration, colonne élargie, mapping ajouté…), remettre ces lignes en file
+avec la commande intégrée — elle repart `status=PENDING`, `attempts=0`,
+`last_error` conservé comme trace :
+
+```bash
+# systemd : arrêter l'agent, requeue, redémarrer
+systemctl stop sigdep-sync
+# toutes les entités
+java -jar /opt/sigdep-sync/sigdep-sync.jar --requeue-dead-letter
+# …ou une seule entité
+java -jar /opt/sigdep-sync/sigdep-sync.jar --requeue-dead-letter=LAB_RESULTS
+systemctl start sigdep-sync
+
+# Docker : one-shot dans un conteneur jetable montant le même volume
+docker run --rm --env-file /opt/sigdep-sync/.env \
+  -v sigdep-sync_sigdep-buffer:/var/lib/sigdep-agent \
+  "$SIGDEP_SYNC_IMAGE" --requeue-dead-letter=LAB_RESULTS
+```
+
+La commande **ne démarre pas** de cycle de synchronisation : elle requeue,
+journalise le nombre de lignes traitées, puis s'arrête (le scheduler est
+désactivé pour ce lancement, donc aucun cycle ne part en concurrence). Elle
+passe par le même verrou d'écriture que l'agent : sûre même si le fichier de
+tampon est partagé. Elle remplace l'ancien `UPDATE outbox SET status='PENDING'`
+lancé à la main via un conteneur `alpine + sqlite3`.
+
 ### Forcer une resynchronisation complète
 
 Arrêter l'agent, supprimer le fichier de tampon, redémarrer. L'agent
@@ -302,6 +410,15 @@ de `core.sites` côté hub. Soit le site n'a pas été initialisé, soit
 la valeur est erronée. Ne pas faire créer la ligne par l'agent — les
 sites sont des données de référence et vivent dans la migration de
 seed du hub.
+
+### Qualité des données (rejets liés à la donnée source)
+
+Certains rejets (`UNKNOWN_PATIENT` persistants, `UPSERT_FAILED`) viennent de la
+**qualité de la donnée saisie dans OpenMRS**, pas d'un bug de synchro. Les cas
+rencontrés, leur diagnostic, les correctifs et les **requêtes de détection** à
+passer sur une base avant déploiement sont recensés dans
+[docs/data-quality.md](docs/data-quality.md). À consulter dès qu'un site présente
+un pic de rejets, et à compléter (gabarit `DQ-NN`) quand un nouveau cas apparaît.
 
 ## Licence
 

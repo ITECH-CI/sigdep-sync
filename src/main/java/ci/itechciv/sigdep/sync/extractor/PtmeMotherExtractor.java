@@ -41,10 +41,13 @@ public class PtmeMotherExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
         return localDb.query(
                 """
-                SELECT p.uuid                   AS p_uuid,
+                SELECT p.pregnant_patient_id     AS pregnant_patient_id,
+                       p.uuid                   AS p_uuid,
                        p.pregnant_number,
                        p.hiv_care_number,
                        p.screening_number,
@@ -63,7 +66,9 @@ public class PtmeMotherExtractor implements DataExtractor {
                        f.delivery_type,
                        GREATEST(
                          COALESCE(p.date_changed, p.date_created),
-                         COALESCE(f.date_changed, f.date_created, p.date_created)
+                         COALESCE(f.date_changed, f.date_created, p.date_created),
+                         COALESCE(p.date_voided, p.date_created),
+                         COALESCE(f.date_voided, f.date_created, p.date_created)
                        ) AS effective_changed
                 FROM ptme_pregnant_patient p
                 LEFT JOIN ptme_mother_followup f
@@ -71,12 +76,21 @@ public class PtmeMotherExtractor implements DataExtractor {
                       AND f.voided = 0
                 WHERE GREATEST(
                         COALESCE(p.date_changed, p.date_created),
-                        COALESCE(f.date_changed, f.date_created, p.date_created)
+                        COALESCE(f.date_changed, f.date_created, p.date_created),
+                        COALESCE(p.date_voided, p.date_created),
+                        COALESCE(f.date_voided, f.date_created, p.date_created)
                       ) > ?
-                ORDER BY effective_changed
+                   OR (GREATEST(
+                        COALESCE(p.date_changed, p.date_created),
+                        COALESCE(f.date_changed, f.date_created, p.date_created),
+                        COALESCE(p.date_voided, p.date_created),
+                        COALESCE(f.date_voided, f.date_created, p.date_created)
+                      ) = ? AND p.pregnant_patient_id > ?)
+                ORDER BY effective_changed, p.pregnant_patient_id
                 LIMIT ?
                 """,
                 (rs, i) -> {
+                    long pregnantPatientId = rs.getLong("pregnant_patient_id");
                     UUID uuid = UUID.fromString(rs.getString("p_uuid"));
                     Integer marital = (Integer) rs.getObject("marital_status");
                     Integer spScreen = (Integer) rs.getObject("spousal_screening");
@@ -124,9 +138,9 @@ public class PtmeMotherExtractor implements DataExtractor {
                             rs.getBoolean("p_voided"));
 
                     LocalDateTime changed = rs.getTimestamp("effective_changed").toLocalDateTime();
-                    return new CanonicalRecord(EntityType.PTME_MOTHERS, uuid, changed, dto);
+                    return new CanonicalRecord(EntityType.PTME_MOTHERS, uuid, changed, pregnantPatientId, dto);
                 },
-                Timestamp.valueOf(since), batchSize);
+                Timestamp.valueOf(sinceDate), Timestamp.valueOf(sinceDate), sinceId, batchSize);
     }
 
     private static void put(Map<String, Object> m, String k, Object v) {

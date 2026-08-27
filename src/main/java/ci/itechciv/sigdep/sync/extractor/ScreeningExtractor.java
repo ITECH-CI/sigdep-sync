@@ -43,9 +43,25 @@ public class ScreeningExtractor implements DataExtractor {
     @Override public String getWatermarkColumn() { return "screening_date"; }
     @Override public boolean isEnabled()         { return true; }
 
+    /**
+     * Extraction en KEYSET (screening_date, hiv_screening_id).
+     *
+     * La table amont n'a pas de date_changed : le watermark temporel n'a
+     * qu'une granularité JOUR. Avec un simple {@code screening_date >= ?} le
+     * curseur ne franchissait jamais la frontière du jour courant et
+     * ré-extrayait toute la journée à chaque cycle (rejeu absorbé en upsert
+     * côté hub, mais transactions d'audit qui s'accumulent). On ajoute donc
+     * l'id comme tie-breaker et on filtre en keyset strict :
+     * {@code date > d OR (date = d AND id > lastId)}.
+     *
+     * Le curseur keyset {@code (watermark, lastId)} est fourni par le pipeline
+     * (avancé optimistement en mémoire, rejoué depuis sync_state au démarrage)
+     * — l'extracteur ne relit plus lui-même sync_state.last_id.
+     */
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
-        LocalDate sinceDate = since.toLocalDate();
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDate sinceDate = cursor.watermark().toLocalDate();
+        long sinceId = cursor.lastId();
 
         return localDb.query(
                 """
@@ -79,11 +95,13 @@ public class ScreeningExtractor implements DataExtractor {
                 FROM hiv_screening_hiv_screening h
                 LEFT JOIN hiv_screening_screening_register_info ri
                        ON ri.screening_info_id = h.register_info
-                WHERE h.screening_date >= ?
+                WHERE h.screening_date > ?
+                   OR (h.screening_date = ? AND h.hiv_screening_id > ?)
                 ORDER BY h.screening_date, h.hiv_screening_id
                 LIMIT ?
                 """,
                 (rs, i) -> {
+                    long screeningId = rs.getLong("hiv_screening_id");
                     UUID uuid = UUID.fromString(rs.getString("screening_uuid"));
                     LocalDate screeningDate = rs.getDate("screening_date") == null ? null
                             : rs.getDate("screening_date").toLocalDate();
@@ -144,9 +162,13 @@ public class ScreeningExtractor implements DataExtractor {
                     LocalDateTime changed = screeningDate == null
                             ? LocalDateTime.now()
                             : LocalDateTime.of(screeningDate, LocalTime.MIN);
-                    return new CanonicalRecord(EntityType.SCREENINGS, uuid, changed, dto);
+                    // sourceId = hiv_screening_id : porté jusqu'à l'outbox pour
+                    // que le flusher avance sync_state.last_id sur les seules
+                    // lignes confirmées par le hub (keyset robuste aux rejets).
+                    return new CanonicalRecord(
+                            EntityType.SCREENINGS, uuid, changed, screeningId, dto);
                 },
-                Date.valueOf(sinceDate), batchSize);
+                Date.valueOf(sinceDate), Date.valueOf(sinceDate), sinceId, batchSize);
     }
 
     private static void putIfNotNull(Map<String, Object> map, String k, Object v) {

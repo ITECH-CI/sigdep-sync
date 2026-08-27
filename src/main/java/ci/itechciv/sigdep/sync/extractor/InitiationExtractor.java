@@ -155,7 +155,9 @@ public class InitiationExtractor implements DataExtractor {
     @Override public boolean isEnabled()         { return true; }
 
     @Override
-    public List<CanonicalRecord> extract(LocalDateTime since, int batchSize) {
+    public List<CanonicalRecord> extract(SyncCursor cursor, int batchSize) {
+        LocalDateTime sinceDate = cursor.watermark();
+        long sinceId = cursor.lastId();
         List<EncounterRow> rows = localDb.query(
                 """
                 SELECT e.encounter_id              AS encounter_id,
@@ -163,13 +165,20 @@ public class InitiationExtractor implements DataExtractor {
                        per.uuid                    AS patient_uuid,
                        e.encounter_datetime        AS encounter_datetime,
                        e.voided                    AS voided,
-                       COALESCE(e.date_changed, e.date_created) AS effective_changed
+                       GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) AS effective_changed
                 FROM encounter e
                 JOIN encounter_type et ON et.encounter_type_id = e.encounter_type
+                -- Exiger un vrai patient : e.patient_id peut pointer vers une
+                -- person NON-patient (relation, prestataire…). Sans ce JOIN,
+                -- l'encounter remonterait avec un UUID que PatientExtractor
+                -- (FROM patient JOIN person) n'extrait jamais → rejet
+                -- UNKNOWN_PATIENT éternel côté hub.
+                JOIN patient pat       ON pat.patient_id = e.patient_id
                 JOIN person  per       ON per.person_id  = e.patient_id
                 WHERE et.uuid = ?
-                  AND COALESCE(e.date_changed, e.date_created) > ?
-                ORDER BY effective_changed
+                  AND (GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) > ?
+                       OR (GREATEST(COALESCE(e.date_changed, e.date_created), COALESCE(e.date_voided, e.date_created)) = ? AND e.encounter_id > ?))
+                ORDER BY effective_changed, e.encounter_id
                 LIMIT ?
                 """,
                 (rs, i) -> new EncounterRow(
@@ -180,7 +189,9 @@ public class InitiationExtractor implements DataExtractor {
                         rs.getBoolean("voided"),
                         rs.getTimestamp("effective_changed").toLocalDateTime()),
                 OPENING_FILE_UUID,
-                Timestamp.valueOf(since),
+                Timestamp.valueOf(sinceDate),
+                Timestamp.valueOf(sinceDate),
+                sinceId,
                 batchSize);
 
         if (rows.isEmpty()) {
@@ -282,9 +293,9 @@ public class InitiationExtractor implements DataExtractor {
                     extra.isEmpty() ? null : extra,
                     r.voided);
 
-            out.add(new CanonicalRecord(EntityType.TREATMENT_INITIATIONS, r.encounterUuid, r.changed, dto));
+            out.add(new CanonicalRecord(EntityType.TREATMENT_INITIATIONS, r.encounterUuid, r.changed, r.encounterId, dto));
         }
-        log.debug("Extracted {} initiation(s) since {}", out.size(), since);
+        log.debug("Extracted {} initiation(s) since {}", out.size(), sinceDate);
         return out;
     }
 
