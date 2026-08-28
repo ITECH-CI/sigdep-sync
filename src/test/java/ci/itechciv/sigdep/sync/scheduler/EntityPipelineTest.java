@@ -150,7 +150,8 @@ class EntityPipelineTest {
         OutboxRepository outbox = new OutboxRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         SyncStateRepository state = new SyncStateRepository(buffer, new ci.itechciv.sigdep.sync.buffer.BufferWriteLock());
         OutboxEnqueuer enqueuer = new OutboxEnqueuer(outbox, new ObjectMapper());
-        OutboxFlusher flusher = new OutboxFlusher(outbox, hub, new ObjectMapper(), state, props());
+        OutboxFlusher flusher = new OutboxFlusher(outbox, hub, new ObjectMapper(), state, props(),
+                ci.itechciv.sigdep.sync.config.SiteLocationPreflight.resolvedTo(null));
         return new EntityPipeline(
                 extractor, BATCH, props().pipelineDepth(), MAX_PAGES, EPOCH,
                 state, flusher, outbox, enqueuer::enqueue);

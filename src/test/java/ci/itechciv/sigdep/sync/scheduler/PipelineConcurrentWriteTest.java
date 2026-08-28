@@ -130,7 +130,8 @@ class PipelineConcurrentWriteTest {
         OutboxRepository outbox = new OutboxRepository(buffer, lock);
         SyncStateRepository state = new SyncStateRepository(buffer, lock);
         OutboxEnqueuer enqueuer = new OutboxEnqueuer(outbox, new ObjectMapper());
-        OutboxFlusher flusher = new OutboxFlusher(outbox, new SlowHub(), new ObjectMapper(), state, props());
+        OutboxFlusher flusher = new OutboxFlusher(outbox, new SlowHub(), new ObjectMapper(), state, props(),
+                ci.itechciv.sigdep.sync.config.SiteLocationPreflight.resolvedTo(null));
         EntityPipeline pipeline = new EntityPipeline(
                 new FakeExtractor(20), BATCH, props().pipelineDepth(), MAX_PAGES, EPOCH,
                 state, flusher, outbox, enqueuer::enqueue);
