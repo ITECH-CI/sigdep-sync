@@ -31,7 +31,7 @@
         <!-- SHA git court, injecté par la CI (-Dgit.sha=...). 'unknown' en
              build local où le commit exact importe peu. -->
         <git.sha>unknown</git.sha>
-        <sigdep-contracts.version>0.1.0-SNAPSHOT</sigdep-contracts.version>
+        <sigdep-contracts.version>0.2.0-SNAPSHOT</sigdep-contracts.version>
         <sqlite-jdbc.version>3.46.1.0</sqlite-jdbc.version>
         <okhttp.version>4.12.0</okhttp.version>
         <resilience4j.version>2.2.0</resilience4j.version>

@@ -103,7 +103,8 @@ class PushRetryTest {
     }
 
     private OutboxFlusher flusher(CentralApiClient hub, int maxRetries) {
-        return new OutboxFlusher(outbox, hub, new ObjectMapper(), state, props(maxRetries));
+        return new OutboxFlusher(outbox, hub, new ObjectMapper(), state, props(maxRetries),
+                ci.itechciv.sigdep.sync.config.SiteLocationPreflight.resolvedTo(null));
     }
 
     @Test

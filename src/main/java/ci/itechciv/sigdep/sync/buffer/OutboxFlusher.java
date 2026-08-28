@@ -6,6 +6,7 @@ import ci.itechciv.sigdep.contracts.SyncBatchResponse;
 import ci.itechciv.sigdep.contracts.SyncBatchResponse.RecordError;
 import ci.itechciv.sigdep.sync.buffer.OutboxRepository.OutboxEntry;
 import ci.itechciv.sigdep.sync.buffer.OutboxRepository.RejectedId;
+import ci.itechciv.sigdep.sync.config.SiteLocationPreflight;
 import ci.itechciv.sigdep.sync.config.SyncProperties;
 import ci.itechciv.sigdep.sync.pusher.CentralApiClient;
 import ci.itechciv.sigdep.sync.pusher.RetryableTransportException;
@@ -59,17 +60,20 @@ public class OutboxFlusher {
     private final ObjectMapper mapper;
     private final SyncStateRepository syncState;
     private final SyncProperties props;
+    private final SiteLocationPreflight sitePreflight;
 
     public OutboxFlusher(OutboxRepository outbox,
                          CentralApiClient api,
                          ObjectMapper mapper,
                          SyncStateRepository syncState,
-                         SyncProperties props) {
+                         SyncProperties props,
+                         SiteLocationPreflight sitePreflight) {
         this.outbox = outbox;
         this.api = api;
         this.mapper = mapper;
         this.syncState = syncState;
         this.props = props;
+        this.sitePreflight = sitePreflight;
     }
 
     /**
@@ -157,6 +161,7 @@ public class OutboxFlusher {
 
         SyncBatchRequest<Object> batch = new SyncBatchRequest<>(
                 props.siteCode(),
+                sitePreflight.resolvedLocationUuid(),
                 UUID.randomUUID(),
                 entityType,
                 records);
