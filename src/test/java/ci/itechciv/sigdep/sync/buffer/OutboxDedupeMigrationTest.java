@@ -76,6 +76,16 @@ class OutboxDedupeMigrationTest {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
                         + " AND name='ux_outbox_entity_uuid'", Long.class)).isEqualTo(1);
 
+        // La colonne dead_lettered_at (rétention) a été ajoutée à la table
+        // historique, et son index différé créé APRÈS l'ALTER (sinon le CREATE
+        // INDEX aurait échoué sur une colonne inexistante et bloqué le démarrage).
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('outbox')"
+                        + " WHERE name='dead_lettered_at'", Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+                        + " AND name='idx_outbox_dead_lettered_at'", Long.class)).isEqualTo(1);
+
         // Idempotence : un second démarrage ne casse rien.
         new BufferSchemaInitializer(jdbc, env).initSchema();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM outbox", Long.class)).isEqualTo(2);

@@ -95,13 +95,14 @@ public class OutboxRepository {
                        (entity_type, source_uuid, source_id, watermark, payload_json, status)
                 VALUES (?, ?, ?, ?, ?, 'PENDING')
                 ON CONFLICT(entity_type, source_uuid) DO UPDATE SET
-                       payload_json = excluded.payload_json,
-                       watermark    = excluded.watermark,
-                       source_id    = excluded.source_id,
-                       status       = 'PENDING',
-                       attempts     = 0,
-                       last_error   = NULL,
-                       sent_at      = NULL
+                       payload_json     = excluded.payload_json,
+                       watermark        = excluded.watermark,
+                       source_id        = excluded.source_id,
+                       status           = 'PENDING',
+                       attempts         = 0,
+                       last_error       = NULL,
+                       sent_at          = NULL,
+                       dead_lettered_at = NULL
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (EnqueueRow r : rows) {
@@ -244,10 +245,17 @@ public class OutboxRepository {
                                status      = CASE WHEN attempts + 1 >= ?
                                                   THEN 'DEAD_LETTER'
                                                   ELSE 'REJECTED'
-                                             END
+                                             END,
+                               -- Horodate la bascule en DEAD_LETTER (support de
+                               -- la purge par rétention), NULL tant que REJECTED.
+                               dead_lettered_at = CASE WHEN attempts + 1 >= ?
+                                                       THEN datetime('now')
+                                                       ELSE NULL
+                                                  END
                          WHERE id = ?
                         """,
                         r.errorMessage,
+                        maxAttempts,
                         maxAttempts,
                         r.id);
             }
@@ -295,14 +303,42 @@ public class OutboxRepository {
         return writeLock.callExclusively(() -> {
             if (entityType == null) {
                 return jdbc.update(
-                        "UPDATE outbox SET status='PENDING', attempts=0 "
+                        "UPDATE outbox SET status='PENDING', attempts=0, dead_lettered_at=NULL "
                                 + "WHERE status='DEAD_LETTER'");
             }
             return jdbc.update(
-                    "UPDATE outbox SET status='PENDING', attempts=0 "
+                    "UPDATE outbox SET status='PENDING', attempts=0, dead_lettered_at=NULL "
                             + "WHERE status='DEAD_LETTER' AND entity_type=?",
                     entityType.name());
         });
+    }
+
+    /**
+     * Purge par rétention : SUPPRIME les lignes en DEAD_LETTER depuis plus de
+     * {@code retentionDays} jours, effaçant définitivement leur payload
+     * (données de santé nominatives, jamais transmises au hub) du poste.
+     *
+     * <p>Sûr vis-à-vis de la reprise : une DEAD_LETTER est un enregistrement
+     * rejeté en validation par le hub {@code maxRejectAttempts} fois — donc
+     * invalide. Il ne sera accepté qu'après <b>correction à la source</b>, qui
+     * incrémente {@code date_changed} et le fait ré-extraire (le filtre
+     * d'extraction est {@code changed > watermark}), recréant une ligne PENDING
+     * neuve. La suppression ne perd donc que la copie au repos d'une donnée
+     * invalide, pas la capacité de resynchroniser une fois corrigée.
+     *
+     * <p>La reprise manuelle {@code --requeue-dead-letter} n'agit plus sur une
+     * ligne purgée (elle republie le payload stocké) : la rétention doit laisser
+     * un délai suffisant pour cette reprise avant suppression.
+     *
+     * @param retentionDays âge minimal en DEAD_LETTER avant suppression.
+     * @return nombre de lignes supprimées.
+     */
+    public int purgeExpiredDeadLetters(int retentionDays) {
+        return writeLock.callExclusively(() -> jdbc.update(
+                "DELETE FROM outbox WHERE status='DEAD_LETTER'"
+                        + " AND dead_lettered_at IS NOT NULL"
+                        + " AND dead_lettered_at < datetime('now', ?)",
+                "-" + retentionDays + " days"));
     }
 
     /** Nombre de lignes en DEAD_LETTER (toutes entités, ou une seule). */

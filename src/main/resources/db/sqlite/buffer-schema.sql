@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS outbox (
   attempts      INTEGER DEFAULT 0,
   last_error    TEXT,
   created_at    TEXT DEFAULT (datetime('now')),
-  sent_at       TEXT
+  sent_at       TEXT,
+  -- Date de bascule en DEAD_LETTER (NULL sinon). Sert à la purge par
+  -- rétention : une ligne DEAD_LETTER porte encore son payload (données de
+  -- santé, jamais envoyé) et doit être supprimée après N jours. Distincte de
+  -- created_at, que l'UPSERT ne remet pas à jour lors d'une ré-extraction.
+  dead_lettered_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_status_entity ON outbox(status, entity_type, id);
@@ -46,3 +51,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_outbox_entity_uuid ON outbox(entity_type, s
 -- payload_json est vidé dès markSent (plus aucune donnée de santé au repos
 -- pour une ligne déjà transmise).
 CREATE INDEX IF NOT EXISTS idx_outbox_sent_at ON outbox(status, sent_at);
+
+-- Purge par rétention des DEAD_LETTER : une ligne rejetée en validation
+-- maxRejectAttempts fois garde son payload (donnée de santé) indéfiniment.
+-- On la supprime après N jours en DEAD_LETTER (cf. DeadLetterPurgeRunner).
+CREATE INDEX IF NOT EXISTS idx_outbox_dead_lettered_at ON outbox(status, dead_lettered_at);

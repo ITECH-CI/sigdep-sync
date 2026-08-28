@@ -181,8 +181,17 @@ réduisent le volume ; ils ne remplacent pas le contrôle d'accès.
 - **Chiffrement au repos** : SQLCipher (applicatif, portable) ou chiffrement de
   volume (LUKS / BitLocker, transparent). Le coût réel est la **gestion de la clé
   sur chaque site** — à évaluer avant de s'engager.
-- **Purge des `DEAD_LETTER` anciennes** : aujourd'hui elles gardent leur payload
-  sans limite de durée. Une rétention (avec remontée d'alerte) serait cohérente.
+- **Purge des `DEAD_LETTER` anciennes** : ✅ **implémenté.** Une ligne
+  `DEAD_LETTER` est supprimée après `dead-letter-retention-days` jours (défaut
+  60, `SIGDEP_DEAD_LETTER_RETENTION_DAYS`, purge au démarrage — cf.
+  `DeadLetterPurgeRunner`), effaçant son payload du poste. Sûr vis-à-vis de la
+  reprise : une DEAD_LETTER est un rejet de **validation** (donnée invalide) ;
+  elle ne sera acceptée qu'après **correction à la source**, qui incrémente
+  `date_changed` et la fait ré-extraire (recréant une ligne PENDING). Le délai
+  laisse le temps d'une reprise manuelle (`--requeue-dead-letter`, qui republie
+  le payload stocké) avant l'effacement. Limite connue : une fiche restée
+  définitivement invalide **et jamais recorrigée** n'est pas récupérable après
+  purge — mais elle n'atteindrait de toute façon jamais le hub.
 
 ---
 
