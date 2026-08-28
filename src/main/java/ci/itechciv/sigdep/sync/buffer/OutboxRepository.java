@@ -38,10 +38,13 @@ public class OutboxRepository {
      * commit (et donc un fsync) par ligne — l'enqueue de 500 lignes passait de
      * ~1,5 s (autocommit ligne par ligne) à quelques dizaines de ms.
      *
-     * Sémantique conservée par ligne : on tente d'abord un UPDATE en place si
-     * une ligne (entity_type, source_uuid) est encore PENDING/REJECTED (le hub
-     * ne l'a pas encore acceptée), sinon on INSERT. Les UPDATE et les INSERT
-     * sont chacun groupés en {@code addBatch()/executeBatch()}.
+     * Sémantique par ligne : UPSERT sur (entity_type, source_uuid), garanti
+     * unique par {@code ux_outbox_entity_uuid}. Une ré-extraction écrase donc
+     * la ligne existante au lieu d'en créer une nouvelle — y compris quand
+     * elle était déjà SENT, cas qui accumulait auparavant une copie du
+     * payload (donnée de santé) à chaque passage. Le statut repasse à PENDING
+     * avec {@code attempts} remis à zéro : le payload vient d'être ré-extrait
+     * de la source, les échecs de l'ancienne version ne le concernent plus.
      *
      * Atomicité : autocommit désactivé le temps du lot ; toute exception
      * déclenche un rollback de l'INTÉGRALITÉ du lot (rien de partiel n'est
@@ -59,8 +62,7 @@ public class OutboxRepository {
             boolean previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
             try {
-                List<EnqueueRow> toInsert = updateExisting(conn, rows);
-                insertNew(conn, toInsert);
+                upsertAll(conn, rows);
                 conn.commit();
                 return null;
             } catch (RuntimeException | java.sql.SQLException e) {
@@ -73,50 +75,34 @@ public class OutboxRepository {
     }
 
     /**
-     * Passe UPDATE sur chaque ligne (batch) et retourne celles pour lesquelles
-     * aucune ligne PENDING/REJECTED n'existait (updateCount == 0) → à INSERT.
+     * UPSERT groupé de toutes les lignes. Le DO UPDATE remet la ligne en
+     * PENDING avec attempts=0 et efface last_error : c'est un payload neuf,
+     * il doit repartir avec un compteur de tentatives neuf (sinon une ligne
+     * anciennement DEAD_LETTER resterait bloquée alors que la donnée source
+     * a justement été corrigée).
+     *
+     * sent_at est remis à NULL pour ne pas laisser une date d'envoi qui ne
+     * correspond plus au contenu de la ligne.
      */
-    private static List<EnqueueRow> updateExisting(Connection conn, List<EnqueueRow> rows)
-            throws java.sql.SQLException {
-        String sql =
-                "UPDATE outbox SET payload_json = ?, watermark = ?, source_id = ?"
-                + " WHERE entity_type = ? AND source_uuid = ?"
-                + "   AND status IN ('PENDING', 'REJECTED')";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            for (EnqueueRow r : rows) {
-                ps.setString(1, r.payloadJson());
-                ps.setTimestamp(2, Timestamp.valueOf(r.watermark()));
-                if (r.sourceId() == null) {
-                    ps.setNull(3, Types.INTEGER);
-                } else {
-                    ps.setLong(3, r.sourceId());
-                }
-                ps.setString(4, r.entityType().name());
-                ps.setString(5, r.sourceUuid().toString());
-                ps.addBatch();
-            }
-            int[] counts = ps.executeBatch();
-            List<EnqueueRow> toInsert = new ArrayList<>();
-            for (int i = 0; i < rows.size(); i++) {
-                // 0 = aucune ligne existante mise à jour → à insérer.
-                // SUCCESS_NO_INFO (-2) signifie « au moins une », donc pas d'insert.
-                if (counts[i] == 0) {
-                    toInsert.add(rows.get(i));
-                }
-            }
-            return toInsert;
-        }
-    }
-
-    /** INSERT groupé des lignes nouvelles. */
-    private static void insertNew(Connection conn, List<EnqueueRow> rows)
+    private static void upsertAll(Connection conn, List<EnqueueRow> rows)
             throws java.sql.SQLException {
         if (rows.isEmpty()) {
             return;
         }
         String sql =
-                "INSERT INTO outbox (entity_type, source_uuid, source_id, watermark, payload_json, status)"
-                + " VALUES (?, ?, ?, ?, ?, 'PENDING')";
+                """
+                INSERT INTO outbox
+                       (entity_type, source_uuid, source_id, watermark, payload_json, status)
+                VALUES (?, ?, ?, ?, ?, 'PENDING')
+                ON CONFLICT(entity_type, source_uuid) DO UPDATE SET
+                       payload_json = excluded.payload_json,
+                       watermark    = excluded.watermark,
+                       source_id    = excluded.source_id,
+                       status       = 'PENDING',
+                       attempts     = 0,
+                       last_error   = NULL,
+                       sent_at      = NULL
+                """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (EnqueueRow r : rows) {
                 ps.setString(1, r.entityType().name());
@@ -202,13 +188,25 @@ public class OutboxRepository {
         return rs.wasNull() ? null : v;
     }
 
+    /**
+     * Marque les lignes acceptées par le hub et EFFACE leur payload.
+     *
+     * Le payload est une donnée de santé nominative ; une fois le hub maître
+     * de la donnée, la conserver sur le poste du site n'a plus d'utilité —
+     * aucun code ne relit le payload_json d'une ligne SENT (le rapport
+     * --reconcile n'en fait qu'un COUNT). On garde la ligne elle-même pour ce
+     * comptage et pour la traçabilité (source_uuid, sent_at).
+     *
+     * La colonne est NOT NULL : on écrit la chaîne vide, pas NULL.
+     */
     public void markSent(List<Long> ids) {
         if (ids.isEmpty()) {
             return;
         }
         String placeholders = String.join(",", ids.stream().map(i -> "?").toList());
         writeLock.runExclusively(() -> jdbc.update(
-                "UPDATE outbox SET status='SENT', sent_at=datetime('now') WHERE id IN (" + placeholders + ")",
+                "UPDATE outbox SET status='SENT', sent_at=datetime('now'), payload_json='' "
+                        + "WHERE id IN (" + placeholders + ")",
                 ids.toArray()));
     }
 

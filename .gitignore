@@ -17,6 +17,13 @@ target/
 *.sqlite
 *.db
 /buffer/
+# Copies suffixees du buffer (buffer.sqlite.bak-AAAAMMJJ, .sqlite-wal, .sqlite-shm) :
+# *.sqlite ne les couvre pas. Elles contiennent des donnees de sante en clair.
+*.sqlite.*
+*.sqlite-wal
+*.sqlite-shm
+*.bak
+*.bak-*
 
 # IDE
 .idea/
