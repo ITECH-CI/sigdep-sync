@@ -22,5 +22,20 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sigdep-sync
 
+# --- Durcissement (protection des données de santé au repos) ---
+# Le buffer SQLite et le .env (clé API + mot de passe MySQL) ne doivent pas
+# être lisibles par les autres comptes de la machine. UMask=0077 fait que tout
+# fichier créé par l'agent (buffer.sqlite, -wal, -shm) est en 600.
+UMask=0077
+# Empêche l'agent d'acquérir de nouveaux privilèges (setuid, capabilities).
+NoNewPrivileges=true
+# Système en lecture seule sauf le dossier du buffer, home des autres users
+# masqué, /tmp privé. Réduit la surface en cas de compromission de l'agent.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Seul le dossier du buffer reste inscriptible malgré ProtectSystem=strict.
+ReadWritePaths=/var/lib/sigdep-sync
+
 [Install]
 WantedBy=multi-user.target

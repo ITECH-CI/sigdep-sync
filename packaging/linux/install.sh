@@ -38,10 +38,16 @@ else
   echo "    .env existant conservé"
 fi
 
-# 3. Dossier de buffer (SQLite) inscriptible par l'agent.
+# 3. Dossier de buffer (SQLite) inscriptible par l'agent, protégé en lecture.
+#    Le buffer contient des données de santé nominatives (cf.
+#    docs/security-audit-buffer.md). WAL crée aussi buffer.sqlite-wal /
+#    -shm à côté : on protège le RÉPERTOIRE (700), pas seulement le fichier,
+#    pour couvrir les sidecars. .env porte la clé API + le mot de passe MySQL
+#    → 600 (seul l'utilisateur de service le lit ; le groupe n'en a pas besoin).
 mkdir -p /var/lib/sigdep-sync
 chown -R "$RUN_USER:$RUN_USER" /var/lib/sigdep-sync "$INSTALL_DIR"
-chmod 640 "$INSTALL_DIR/.env"
+chmod 700 /var/lib/sigdep-sync
+chmod 600 "$INSTALL_DIR/.env"
 
 # 4. Installer l'unité systemd (placeholders remplacés).
 sed -e "s|@INSTALL_DIR@|$INSTALL_DIR|g" \

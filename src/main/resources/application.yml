@@ -81,4 +81,9 @@ management:
 logging:
   level:
     root: INFO
-    ci.itechciv.sigdep.sync: DEBUG
+    # INFO par défaut (pas DEBUG) : les logs sont écrits sur le poste du site,
+    # lisibles selon les permissions du dossier logs\. Aucun log ne trace de
+    # payload aujourd'hui, mais DEBUG par défaut laisserait un futur
+    # log.debug("payload={}", …) fuiter des données de santé. Activer DEBUG
+    # explicitement via SIGDEP_LOG_LEVEL au besoin (diagnostic ponctuel).
+    ci.itechciv.sigdep.sync: ${SIGDEP_LOG_LEVEL:INFO}

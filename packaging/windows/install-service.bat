@@ -46,20 +46,35 @@ REM ---------- 3. Service deja installe ? ----------
 sc query "%SERVICE_ID%" >nul 2>&1
 if not errorlevel 1 goto ERR_EXISTS
 
-REM ---------- 4. Installation ----------
-echo [1/3] Installation du service...
+REM ---------- 4. Verrouillage des permissions du dossier ----------
+REM  Le dossier contient des donnees de sante (buffer.sqlite) et des secrets
+REM  (.env : cle API + mot de passe MySQL). Par defaut, un dossier a la racine
+REM  de C: herite d'ACL lisibles par le groupe Users : tout compte du poste
+REM  peut lire les donnees patients. On retire l'heritage et on n'accorde
+REM  l'acces qu'a SYSTEM (le service tourne en LocalSystem) et aux
+REM  Administrateurs. SID utilises (independants de la langue de Windows) :
+REM    *S-1-5-18     = SYSTEM
+REM    *S-1-5-32-544 = groupe Administrateurs
+echo [1/4] Verrouillage des permissions du dossier...
+icacls "%CD%" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" >nul
+if errorlevel 1 goto ERR_ACL
+echo       OK (acces restreint a SYSTEM et Administrateurs).
+echo.
+
+REM ---------- 5. Installation ----------
+echo [2/4] Installation du service...
 "%WRAPPER%" install
 if errorlevel 1 goto ERR_INSTALL
 echo       OK.
 echo.
 
-echo [2/3] Demarrage du service...
+echo [3/4] Demarrage du service...
 "%WRAPPER%" start
 if errorlevel 1 goto ERR_START
 echo       OK.
 echo.
 
-echo [3/3] Statut du service :
+echo [4/4] Statut du service :
 "%WRAPPER%" status
 echo.
 
@@ -134,6 +149,14 @@ echo    uninstall-service.bat
 echo Pour simplement le redemarrer :
 echo    %WRAPPER% restart
 set "RC=4"
+goto FIN
+
+:ERR_ACL
+echo.
+echo [ERREUR] Le verrouillage des permissions (icacls) a echoue.
+echo Le service n'a PAS ete installe : les donnees resteraient lisibles
+echo par tout compte du poste. Relancez en tant qu'administrateur.
+set "RC=7"
 goto FIN
 
 :ERR_INSTALL
