@@ -61,19 +61,23 @@ public class BufferSchemaInitializer {
         // Les colonnes du keyset doivent exister avant tout DML de migration.
         // CREATE TABLE IF NOT EXISTS ne modifie pas une table deja creee, donc
         // on applique d'abord le DDL des tables, puis les ALTER, puis le
-        // dedoublonnage, et seulement ensuite l'index UNIQUE (qui echouerait
-        // sur une base historique porteuse de doublons).
+        // dedoublonnage, et seulement ensuite les index DIFFERES : l'index
+        // UNIQUE (qui echouerait sur une base historique porteuse de doublons)
+        // et idx_outbox_dead_lettered_at (qui reference la colonne
+        // dead_lettered_at, absente d'une base historique tant que l'ALTER
+        // n'a pas tourne).
         for (String stmt : splitStatements(ddl)) {
-            if (isUniqueOutboxIndex(stmt)) {
+            if (isDeferredIndex(stmt)) {
                 continue;
             }
             buffer.execute(stmt);
         }
         addColumnIfMissing("sync_state", "last_id", "INTEGER");
         addColumnIfMissing("outbox", "source_id", "INTEGER");
+        addColumnIfMissing("outbox", "dead_lettered_at", "TEXT");
         dedupeOutbox();
         for (String stmt : splitStatements(ddl)) {
-            if (isUniqueOutboxIndex(stmt)) {
+            if (isDeferredIndex(stmt)) {
                 buffer.execute(stmt);
             }
         }
@@ -194,12 +198,19 @@ public class BufferSchemaInitializer {
     }
 
     /**
-     * Reconnait l'instruction creant l'index UNIQUE sur (entity_type,
-     * source_uuid). Elle est mise de cote au premier passage : sur une base
-     * historique, des doublons existent et sa creation echouerait.
+     * Reconnait les index DIFFERES, à créer seulement après la migration des
+     * bases historiques (ALTER + dédoublonnage) :
+     * <ul>
+     *   <li>{@code ux_outbox_entity_uuid} : index UNIQUE (entity_type,
+     *       source_uuid) — échouerait sur une base porteuse de doublons ;</li>
+     *   <li>{@code idx_outbox_dead_lettered_at} : référence la colonne
+     *       {@code dead_lettered_at}, absente tant que l'ALTER n'a pas tourné.</li>
+     * </ul>
      */
-    private static boolean isUniqueOutboxIndex(String stmt) {
-        return stmt.toLowerCase(java.util.Locale.ROOT).contains("ux_outbox_entity_uuid");
+    private static boolean isDeferredIndex(String stmt) {
+        String s = stmt.toLowerCase(java.util.Locale.ROOT);
+        return s.contains("ux_outbox_entity_uuid")
+                || s.contains("idx_outbox_dead_lettered_at");
     }
 
     /**

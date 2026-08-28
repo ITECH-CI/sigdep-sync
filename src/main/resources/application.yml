@@ -18,6 +18,12 @@ sigdep:
     interval-ms: 900000
     watermark-initial: 1970-01-01T00:00:00
     max-reject-attempts: ${SIGDEP_MAX_REJECT_ATTEMPTS:10}
+    # Rétention des lignes DEAD_LETTER (rejets de validation ayant épuisé leurs
+    # tentatives). Elles conservent leur payload — données de santé nominatives
+    # jamais transmises — donc on les SUPPRIME après ce délai (au démarrage).
+    # Un enregistrement corrigé à la source resynchronise de lui-même
+    # (date_changed > watermark). 0 ou négatif = purge désactivée.
+    dead-letter-retention-days: ${SIGDEP_DEAD_LETTER_RETENTION_DAYS:60}
     # Profondeur du pipeline extraction/push (lots « en vol » par entity_type).
     # 1 = séquentiel (historique) ; 2 (défaut) recouvre l'extraction du lot
     # suivant avec le round-trip réseau du lot en cours.
