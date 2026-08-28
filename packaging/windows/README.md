@@ -60,8 +60,18 @@ Aucun Java n'est à installer : le JRE est embarqué dans l'archive.
    install-service.bat
    ```
 
-   Le script vérifie la présence du `.env`, installe le service
-   nommé `sigdep-sync`, le démarre, et affiche son statut.
+   Le script **verrouille d'abord les permissions du dossier**
+   (`icacls` : retrait de l'héritage, accès restreint à SYSTEM et aux
+   Administrateurs), puis vérifie la présence du `.env`, installe le
+   service nommé `sigdep-sync`, le démarre, et affiche son statut.
+
+   > **Protection des données.** Ce dossier contient le buffer
+   > (`buffer.sqlite`, données de santé nominatives) et le `.env`
+   > (clé API + mot de passe MySQL). Sans ce verrouillage, un dossier
+   > créé à la racine de `C:\` est lisible par **tout compte du poste**.
+   > Après installation, vérifiez avec `icacls C:\sigdep-sync` que seuls
+   > `SYSTEM` et `Administrateurs` ont un accès. Ne déplacez pas le
+   > dossier dans un emplacement à ACL héritées permissives.
 
 5. **Vérifier les logs** :
 

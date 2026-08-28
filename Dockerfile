@@ -36,8 +36,11 @@ WORKDIR /opt/sigdep
 # Persistent volume for the SQLite buffer + sync_state. The path
 # defaults to /var/lib/sigdep-agent which matches the systemd unit so
 # both deployment styles share the same on-disk layout.
+# Le buffer contient des données de santé nominatives : dossier accessible au
+# seul utilisateur du conteneur (700), pas aux autres uid partageant le volume.
 RUN mkdir -p /var/lib/sigdep-agent \
- && chown -R sigdep:sigdep /var/lib/sigdep-agent
+ && chown -R sigdep:sigdep /var/lib/sigdep-agent \
+ && chmod 700 /var/lib/sigdep-agent
 VOLUME /var/lib/sigdep-agent
 
 # Embed the fat jar built by the CI.

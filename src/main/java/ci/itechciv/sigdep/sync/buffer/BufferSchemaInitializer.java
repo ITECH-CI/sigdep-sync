@@ -4,11 +4,15 @@ import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -254,9 +258,38 @@ public class BufferSchemaInitializer {
         }
         try {
             Files.createDirectories(parent);
+            restrictBufferDirectoryPermissions(parent);
             log.debug("Buffer directory ensured: {}", parent);
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot create buffer directory " + parent, e);
+        }
+    }
+
+    /**
+     * Défense en profondeur : restreint le répertoire du buffer à son seul
+     * propriétaire ({@code rwx------}), indépendamment de ce que le packaging a
+     * (ou n'a pas) fait. Le buffer contient des données de santé nominatives et
+     * WAL y crée aussi {@code buffer.sqlite-wal}/{@code -shm} : protéger le
+     * RÉPERTOIRE couvre les sidecars.
+     *
+     * <p>POSIX seulement (Linux/Docker) : sur un système sans permissions POSIX
+     * (Windows), on ne fait rien — le contrôle d'accès y est posé par
+     * {@code install-service.bat} (icacls). Best-effort : un échec de
+     * resserrement est journalisé sans empêcher le démarrage (le packaging
+     * reste la première ligne de défense).
+     */
+    static void restrictBufferDirectoryPermissions(Path dir) {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return; // Windows : ACL gérées par le packaging (icacls).
+        }
+        Set<PosixFilePermission> ownerOnly =
+                PosixFilePermissions.fromString("rwx------");
+        try {
+            Files.setPosixFilePermissions(dir, ownerOnly);
+        } catch (IOException | UnsupportedOperationException e) {
+            log.warn("Impossible de restreindre les permissions du dossier buffer {} "
+                    + "({}). Vérifiez que le packaging l'a mis en 700 : il contient "
+                    + "des données de santé.", dir, e.toString());
         }
     }
 }
