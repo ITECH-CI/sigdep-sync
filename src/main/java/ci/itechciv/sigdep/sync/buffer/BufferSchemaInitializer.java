@@ -58,11 +58,25 @@ public class BufferSchemaInitializer {
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot read buffer-schema.sql", e);
         }
+        // Les colonnes du keyset doivent exister avant tout DML de migration.
+        // CREATE TABLE IF NOT EXISTS ne modifie pas une table deja creee, donc
+        // on applique d'abord le DDL des tables, puis les ALTER, puis le
+        // dedoublonnage, et seulement ensuite l'index UNIQUE (qui echouerait
+        // sur une base historique porteuse de doublons).
         for (String stmt : splitStatements(ddl)) {
+            if (isUniqueOutboxIndex(stmt)) {
+                continue;
+            }
             buffer.execute(stmt);
         }
         addColumnIfMissing("sync_state", "last_id", "INTEGER");
         addColumnIfMissing("outbox", "source_id", "INTEGER");
+        dedupeOutbox();
+        for (String stmt : splitStatements(ddl)) {
+            if (isUniqueOutboxIndex(stmt)) {
+                buffer.execute(stmt);
+            }
+        }
         log.info("SQLite buffer schema ensured");
     }
 
@@ -177,6 +191,53 @@ public class BufferSchemaInitializer {
             buffer.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
             log.info("{}.{} column added (keyset migration)", table, column);
         }
+    }
+
+    /**
+     * Reconnait l'instruction creant l'index UNIQUE sur (entity_type,
+     * source_uuid). Elle est mise de cote au premier passage : sur une base
+     * historique, des doublons existent et sa creation echouerait.
+     */
+    private static boolean isUniqueOutboxIndex(String stmt) {
+        return stmt.toLowerCase(java.util.Locale.ROOT).contains("ux_outbox_entity_uuid");
+    }
+
+    /**
+     * Migration des bases historiques : avant l'index UNIQUE, enqueueBatch
+     * INSERT une nouvelle ligne chaque fois que la precedente etait deja SENT
+     * (l'UPDATE en place ne visait que PENDING/REJECTED). Un meme enregistrement
+     * pouvait donc avoir des dizaines de copies de son payload_json sur le
+     * poste du site.
+     *
+     * On ne garde que la ligne la plus recente (MAX(id)) par couple
+     * (entity_type, source_uuid). C'est la bonne survivante : elle porte le
+     * payload le plus a jour et le statut courant ; les anciennes sont, par
+     * construction, des SENT deja acceptes par le hub.
+     *
+     * Idempotent : sans doublon le DELETE ne touche rien. Le VACUUM n'est
+     * declenche que si des lignes ont ete supprimees (SQLite ne rend pas
+     * l'espace disque autrement) et jamais dans une transaction.
+     */
+    private void dedupeOutbox() {
+        Integer dupes = buffer.queryForObject(
+                """
+                SELECT COUNT(*) FROM outbox
+                 WHERE id NOT IN (SELECT MAX(id) FROM outbox
+                                   GROUP BY entity_type, source_uuid)
+                """,
+                Integer.class);
+        if (dupes == null || dupes == 0) {
+            return;
+        }
+        buffer.update(
+                """
+                DELETE FROM outbox
+                 WHERE id NOT IN (SELECT MAX(id) FROM outbox
+                                   GROUP BY entity_type, source_uuid)
+                """);
+        log.warn("Outbox dedupe: {} ligne(s) dupliquee(s) supprimee(s) "
+                + "(une seule ligne conservee par entity_type + source_uuid)", dupes);
+        buffer.execute("VACUUM");
     }
 
     private void ensureBufferDirectory() {

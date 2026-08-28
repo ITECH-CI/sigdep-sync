@@ -33,3 +33,16 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_status_entity ON outbox(status, entity_type, id);
+
+-- Une SEULE ligne par enregistrement source, quel que soit le nombre de
+-- ré-extractions. Sans cet index, enqueueBatch INSERT une nouvelle ligne
+-- chaque fois que la précédente est déjà SENT : le buffer accumulait
+-- indéfiniment des copies du même payload (donnée de santé) sur le poste.
+-- Voir BufferSchemaInitializer#dedupeOutbox pour la migration des bases
+-- existantes, qui doit tourner AVANT la création de cet index.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_outbox_entity_uuid ON outbox(entity_type, source_uuid);
+
+-- Purge des payloads : sent_at porte la date d'acceptation par le hub et
+-- payload_json est vidé dès markSent (plus aucune donnée de santé au repos
+-- pour une ligne déjà transmise).
+CREATE INDEX IF NOT EXISTS idx_outbox_sent_at ON outbox(status, sent_at);
