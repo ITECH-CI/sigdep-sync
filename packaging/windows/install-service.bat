@@ -46,17 +46,27 @@ REM ---------- 3. Service deja installe ? ----------
 sc query "%SERVICE_ID%" >nul 2>&1
 if not errorlevel 1 goto ERR_EXISTS
 
-REM ---------- 4. Verrouillage des permissions du dossier ----------
-REM  Le dossier contient des donnees de sante (buffer.sqlite) et des secrets
-REM  (.env : cle API + mot de passe MySQL). Par defaut, un dossier a la racine
-REM  de C: herite d'ACL lisibles par le groupe Users : tout compte du poste
-REM  peut lire les donnees patients. On retire l'heritage et on n'accorde
-REM  l'acces qu'a SYSTEM (le service tourne en LocalSystem) et aux
+REM ---------- 4. Verrouillage des permissions des dossiers ----------
+REM  Deux dossiers contiennent des donnees sensibles :
+REM    - le dossier d'installation (%CD%) : le .env (cle API + mot de passe
+REM      MySQL) et les journaux ;
+REM    - le dossier du buffer (%BUFFER_DIR%, sous C:\ProgramData) : buffer.sqlite
+REM      et ses fichiers WAL (-wal / -shm), soit des donnees de sante.
+REM  Par defaut ces dossiers heritent d'ACL lisibles par le groupe Users : tout
+REM  compte du poste peut lire les donnees patients. On retire l'heritage et on
+REM  n'accorde l'acces qu'a SYSTEM (le service tourne en LocalSystem) et aux
 REM  Administrateurs. SID utilises (independants de la langue de Windows) :
 REM    *S-1-5-18     = SYSTEM
 REM    *S-1-5-32-544 = groupe Administrateurs
-echo [1/4] Verrouillage des permissions du dossier...
+REM  Le dossier du buffer est cree ICI (avant le 1er demarrage) pour que
+REM  buffer.sqlite naisse deja sous des ACL restreintes, pas avec l'heritage.
+set "BUFFER_DIR=C:\ProgramData\sigdep-sync"
+
+echo [1/4] Verrouillage des permissions des dossiers...
+if not exist "%BUFFER_DIR%" mkdir "%BUFFER_DIR%"
 icacls "%CD%" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" >nul
+if errorlevel 1 goto ERR_ACL
+icacls "%BUFFER_DIR%" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" >nul
 if errorlevel 1 goto ERR_ACL
 echo       OK (acces restreint a SYSTEM et Administrateurs).
 echo.

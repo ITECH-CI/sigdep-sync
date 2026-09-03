@@ -36,8 +36,10 @@ Aucun Java n'est à installer : le JRE est embarqué dans l'archive.
    C:\sigdep-sync\
    ```
 
-   Évitez `Program Files` (écriture restreinte, complique les logs et
-   le buffer SQLite).
+   Évitez `Program Files` (écriture restreinte, complique les logs).
+   Le **buffer SQLite**, lui, est stocké séparément sous
+   `C:\ProgramData\sigdep-sync\` (données d'application, dossier moins
+   exposé) — l'installation l'y crée et y pose des ACL restreintes.
 
 2. **Copier le fichier `.env`** :
 
@@ -60,18 +62,22 @@ Aucun Java n'est à installer : le JRE est embarqué dans l'archive.
    install-service.bat
    ```
 
-   Le script **verrouille d'abord les permissions du dossier**
+   Le script **verrouille d'abord les permissions des dossiers**
    (`icacls` : retrait de l'héritage, accès restreint à SYSTEM et aux
-   Administrateurs), puis vérifie la présence du `.env`, installe le
-   service nommé `sigdep-sync`, le démarre, et affiche son statut.
+   Administrateurs) — le dossier d'installation **et** le dossier du
+   buffer `C:\ProgramData\sigdep-sync\` (qu'il crée) — puis vérifie la
+   présence du `.env`, installe le service nommé `sigdep-sync`, le
+   démarre, et affiche son statut.
 
-   > **Protection des données.** Ce dossier contient le buffer
-   > (`buffer.sqlite`, données de santé nominatives) et le `.env`
-   > (clé API + mot de passe MySQL). Sans ce verrouillage, un dossier
-   > créé à la racine de `C:\` est lisible par **tout compte du poste**.
-   > Après installation, vérifiez avec `icacls C:\sigdep-sync` que seuls
-   > `SYSTEM` et `Administrateurs` ont un accès. Ne déplacez pas le
-   > dossier dans un emplacement à ACL héritées permissives.
+   > **Protection des données.** Le dossier d'installation contient le
+   > `.env` (clé API + mot de passe MySQL) et les journaux ; le dossier
+   > `C:\ProgramData\sigdep-sync\` contient le buffer (`buffer.sqlite`,
+   > données de santé nominatives). Sans ce verrouillage, ces dossiers
+   > sont lisibles par **tout compte du poste**. Après installation,
+   > vérifiez avec `icacls C:\sigdep-sync` et
+   > `icacls C:\ProgramData\sigdep-sync` que seuls `SYSTEM` et
+   > `Administrateurs` ont un accès. Ne déplacez pas le buffer à la
+   > racine de `C:\` (ACL héritées permissives).
 
 5. **Vérifier les logs** :
 
@@ -117,7 +123,9 @@ Le service apparaît aussi dans **services.msc** sous le nom
    sigdep-sync-service.exe stop
    ```
 3. Remplacer **uniquement** `sigdep-sync.jar` et le dossier `jre\` par
-   ceux de la nouvelle archive. **Garder** votre `.env` et `buffer.sqlite`.
+   ceux de la nouvelle archive. **Garder** votre `.env`. Le buffer
+   (`C:\ProgramData\sigdep-sync\buffer.sqlite`) est dans un dossier
+   séparé : la mise à jour du dossier d'installation ne le touche pas.
 4. Redémarrer :
    ```
    sigdep-sync-service.exe start
@@ -162,11 +170,20 @@ Voir [`docs/user-guide/admin/investiguer-rejets.md`](../../../sigdep-hub/docs/us
 
 ```
 sigdep-sync-service.exe stop
-del buffer.sqlite
+del "C:\ProgramData\sigdep-sync\buffer.sqlite"
+del "C:\ProgramData\sigdep-sync\buffer.sqlite-wal"
+del "C:\ProgramData\sigdep-sync\buffer.sqlite-shm"
 sigdep-sync-service.exe start
 ```
 
 L'agent re-extraira depuis la watermark initiale au prochain cycle.
+
+### Désinstallation propre (retrait des données)
+
+`uninstall-service.bat` arrête et désinstalle le service, **puis efface le
+buffer SQLite** (`C:\ProgramData\sigdep-sync\`, données de santé) **et le
+`.env`** (clé API + mot de passe). Après désinstallation, aucune donnée de
+santé ni secret ne subsiste sur le poste.
 
 ## Voir aussi
 
